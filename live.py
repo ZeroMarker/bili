@@ -72,6 +72,7 @@ QR_GENERATE_URL = "https://passport.bilibili.com/x/passport-login/web/qrcode/gen
 QR_POLL_URL = "https://passport.bilibili.com/x/passport-login/web/qrcode/poll"
 NAV_URL = "https://api.bilibili.com/x/web-interface/nav"
 ROOM_ID_URL = "https://api.live.bilibili.com/room/v2/Room/room_id_by_uid"
+ROOM_INFO_URL = "https://api.live.bilibili.com/room/v1/Room/get_info"
 AREA_LIST_URL = "https://api.live.bilibili.com/room/v1/Area/getList"
 VERSION_URL = "https://api.live.bilibili.com/xlive/app-blink/v1/liveVersionInfo/getHomePageLiveVersion"
 START_LIVE_URL = "https://api.live.bilibili.com/room/v1/Room/startLive"
@@ -363,6 +364,20 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def cmd_is_live(args: argparse.Namespace) -> int:
+    """房间是否正在直播：是返回 0，否返回 1（给 webui 切源前自动开播用）。"""
+    session = load_session(args.session)
+    room_id = session.get("room_id") or ""
+    if not room_id:
+        print("未登录或无房间号：请先执行 `python3 live.py login`")
+        return 1
+    payload, _ = _request(f"{ROOM_INFO_URL}?room_id={urllib.parse.quote(str(room_id))}")
+    data = payload.get("data") or {}
+    live_status = data.get("live_status", 0)
+    print(f"live_status={live_status} title={data.get('title', '')}")
+    return 0 if live_status == 1 else 1
+
+
 def cmd_areas(_args: argparse.Namespace) -> int:
     for group in get_areas():
         print(f"[{group.get('id')}] {group.get('name')}")
@@ -442,6 +457,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     areas = sub.add_parser("areas", help="列出直播分区（含子分区 ID）")
     areas.set_defaults(func=cmd_areas)
+    is_live = sub.add_parser("is-live", help="房间是否正在直播（是返回 0）")
+    is_live.set_defaults(func=cmd_is_live)
 
     start = sub.add_parser("start", help="开播并获取 RTMP 地址/推流码")
     start.add_argument("--area", type=int, required=True, help="子分区 ID（见 areas 输出）")

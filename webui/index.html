@@ -146,7 +146,10 @@ pre{background:var(--surface-container-high);color:var(--on-surface);border-radi
         <input id="target" type="text" placeholder="如 ayakiguchi1"></div>
       <button class="btn-fill" id="btnLive" onclick="goMode('live')">启动直播推流</button>
     </div>
-    <div class="mode-hint">先验流再切换：目标没在播会拒绝，保持原推流不动。目标开播前服务每 60 秒轮询，开播自动转推。启动前需先开 B 站房间。</div>
+    <div class="row">
+      <label class="check"><input id="forceLive" type="checkbox"> 没开播也切换（空等复播，每 60 秒重试）</label>
+    </div>
+    <div class="mode-hint">先验流再切换：目标没在播会拒绝，保持原推流不动。勾选上项则跳过验流直接切换，服务空等复播自动转推。</div>
   </div>
 
   <div class="card">
@@ -157,6 +160,7 @@ pre{background:var(--surface-container-high);color:var(--on-surface);border-radi
       <label class="check"><input id="encode" type="checkbox"> --encode 重编码（跨分段卡顿时用；默认 -c copy）</label>
       <button class="btn-tonal" id="btnReplay" onclick="goMode('replay')">启动文件轮播</button>
     </div>
+    <div class="mode-hint">房间关播时自动用上次分区/标题开播；无开播记录时需先去房间卡开播。</div>
   </div>
 
   <div class="card">
@@ -200,7 +204,7 @@ function setBusy(on){
   busy += on ? 1 : -1;
   if(busy < 0) busy = 0;
   document.getElementById('bar').className = 'progress' + (busy ? ' show' : '');
-  for(const id of ['btnLive','btnReplay','btnStart','btnUpdate','btnStop','btnLogs','btnStopAll','btnRefresh'])
+  for(const id of ['btnLive','btnReplay','btnStart','btnUpdate','btnStop','btnLogs','btnStopAll','btnRefresh','forceLive'])
     document.getElementById(id).disabled = !!busy;
 }
 async function api(path, data){
@@ -246,8 +250,9 @@ async function goMode(mode){
     const data = {mode};
     if(mode === 'live'){
       data.target = document.getElementById('target').value.trim();
+      data.force = document.getElementById('forceLive').checked;
       if(!data.target){ showErr(new Error('请填写 TikTok 用户名')); return; }
-      snack('正在验证 @' + data.target + ' 的直播流（≤45s），拿到地址才切换…');
+      snack(data.force ? '跳过验流，直接切换（空等复播）…' : '正在验证 @' + data.target + ' 的直播流（≤45s），拿到地址才切换…');
     }else{
       data.paths = document.getElementById('paths').value.split('\n').map(s => s.trim()).filter(Boolean);
       data.encode = document.getElementById('encode').checked;

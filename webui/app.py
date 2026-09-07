@@ -126,6 +126,26 @@ def sync_push_env() -> None:
     BASHRC.write_text(new_text)
 
 
+def ensure_room_live() -> None:
+    """切源前保证 B 站房间开着：已开直接返回；关播则用上次分区/标题自动开播并同步推流码。
+    无历史记录时抛错，提示用户去房间卡手动开播。调用方在重启推流单元之前调用，新码即刻生效。"""
+    r = run(["python3", str(LIVE_PY), "is-live"], timeout=30, check=False)
+    if r.returncode == 0:
+        return
+    try:
+        session = json.loads(SESSION_FILE.read_text())
+        area, title = int(session.get("area_id", 0)), str(session.get("title", "")).strip()
+    except (OSError, ValueError, TypeError) as exc:
+        raise RuntimeError(f"读取上次开播记录失败: {exc}") from exc
+    if not area or not title:
+        raise ValueError("B 站房间未开播，且没有上次开播记录：请先在房间卡填分区 ID 和标题，点开播")
+    r = run(["python3", str(LIVE_PY), "start", "--area", str(area), "--title", title],
+            timeout=90, check=False)
+    if r.returncode != 0:
+        raise RuntimeError((r.stdout + r.stderr).strip()[-2000:] or "关播状态下自动开播失败")
+    sync_push_env()
+
+
 def _ctl(*args: str) -> None:
     r = run([*SYSTEMCTL, *args], check=False)
     if r.returncode != 0:
@@ -183,7 +203,9 @@ def set_mode(data: dict) -> dict[str, object]:
         target = str(data.get("target", "")).strip()
         if not TARGET_RE.fullmatch(target):
             raise ValueError("TARGET 非法（允许字母数字 . _，≤64 字符）")
-        probe_tiktok(target)  # 先拿到串流地址再停旧起新，失败则保持现状
+        if not bool(data.get("force", False)):
+            probe_tiktok(target)  # 先拿到串流地址再停旧起新，失败则保持现状
+        ensure_room_live()  # 关播时用上次分区/标题自动开播，否则切了也推不上去
         _write_env(LIVE_ENV, [f"TARGET={target}"])
         _ctl("disable", "--now", REPLAY_UNIT)
         _wait_inactive(REPLAY_UNIT)
@@ -197,19 +219,26 @@ def set_mode(data: dict) -> dict[str, object]:
             raise ValueError("paths 需为 1~32 个已存在的文件/目录")
         if any(not isinstance(p, str) for p in paths):
             raise ValueError("paths 含非字符串")
-        if any(re.search(r"[\s\x00-\x1f]", p) for p in paths):
+        # 粘贴常带首尾引号（中英文皆有）：去引号后再校验，否则绝对路径也会被误报
+        cleaned = [p.strip().strip("\"'“”‘’") for p in paths]
+        if any(not p for p in cleaned):
+            raise ValueError("存在空路径")
+        if any(re.search(r"[\s\x00-\x1f]", p) for p in cleaned):
             raise ValueError("路径含空白字符（systemd 会按空白拆散），请改名")
-        abs_paths = [str(Path(p).expanduser()) for p in paths]
+        abs_paths = [str(Path(p).expanduser()) for p in cleaned]
         if any(not p.startswith("/") for p in abs_paths):
             raise ValueError("只接受绝对路径")
         for p in abs_paths:
             pp = Path(p)
+            if not pp.exists():
+                raise ValueError(f"路径不存在：{p}")
             if pp.is_dir():
                 if not list(pp.glob("*.mp4")):
                     raise ValueError(f"目录无 mp4：{p}")
-            elif not (pp.is_file() and pp.suffix == ".mp4"):
+            elif not (pp.is_file() and pp.suffix.lower() == ".mp4"):
                 raise ValueError(f"不是 mp4 文件：{p}")
         encode = bool(data.get("encode", False))
+        ensure_room_live()  # 关播时用上次分区/标题自动开播，否则切了也推不上去
         args = " ".join(abs_paths) + (" --encode" if encode else "")
         _write_env(REPLAY_ENV, [f"REPLAY_ARGS={args}"])
         _ctl("disable", "--now", LIVE_UNIT)
