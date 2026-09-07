@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bili 推流管理</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:760px;margin:0 auto;padding:16px;color:#222}
+h2{border-bottom:1px solid #ddd;padding-bottom:4px}
+.card{border:1px solid #ddd;border-radius:8px;padding:12px;margin:12px 0}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:6px 0}
+input[type=text],input[type=number],textarea{flex:1;min-width:200px;padding:6px;font-size:14px}
+button{padding:6px 14px;font-size:14px;cursor:pointer}
+pre{background:#f5f5f5;padding:8px;overflow:auto;max-height:300px;font-size:12px;white-space:pre-wrap}
+.badge{display:inline-block;padding:2px 10px;border-radius:10px;font-size:13px}
+.on{background:#d4edda}.off{background:#eee}.warn{background:#fff3cd}
+.err{color:#a00}
+</style>
+</head>
+<body>
+<h1>Bili 推流管理</h1>
+
+<div class="card">
+<h2>状态 <button onclick="load()">刷新</button></h2>
+<div>模式：<span id="mode" class="badge off">…</span></div>
+<div class="row"><span>直播推流：</span><span id="liveState">…</span><span id="liveTarget"></span></div>
+<div class="row"><span>文件轮播：</span><span id="replayState">…</span><span id="replayArgs"></span></div>
+<pre id="room">房间状态加载中…</pre>
+</div>
+
+<div class="card">
+<h2>直播推流</h2>
+<div class="row"><input id="target" type="text" placeholder="TikTok 用户名（如 ayakiguchi1）">
+<button onclick="goMode('live')">启动直播推流</button></div>
+<div>启动前需先开 B 站房间（下方房间区）。目标开播前每 60 秒轮询，开播自动转推。</div>
+</div>
+
+<div class="card">
+<h2>文件轮播</h2>
+<div class="row"><textarea id="paths" rows="3" placeholder="绝对路径，每行一个文件或目录（目录取其中 *.mp4）"></textarea></div>
+<div class="row"><label><input id="encode" type="checkbox"> --encode 重编码（跨分段卡顿时用；默认 -c copy）</label>
+<button onclick="goMode('replay')">启动文件轮播</button></div>
+</div>
+
+<div class="card">
+<h2>房间</h2>
+<div class="row"><input id="area" type="number" placeholder="子分区 ID（live.py areas 查）" style="max-width:180px">
+<input id="title" type="text" placeholder="标题（纯文本，禁 emoji，≤40 字）">
+<button onclick="goRoom('start')">开播</button></div>
+<div class="row"><input id="newTitle" type="text" placeholder="新标题">
+<button onclick="goRoom('update')">改标题</button>
+<button onclick="goRoom('stop')">停播（同时停推流）</button></div>
+<pre id="roomOut"></pre>
+</div>
+
+<div class="card">
+<h2>日志</h2>
+<div class="row">
+<select id="which"><option value="live">直播推流</option><option value="replay">文件轮播</option><option value="webui">webui</option></select>
+<button onclick="logs()">查看</button>
+<button onclick="stopAll()" style="margin-left:auto">停止全部推流</button></div>
+<pre id="logOut"></pre>
+</div>
+
+<div id="err" class="err"></div>
+
+<script>
+async function api(path, data){
+  const o = data ? {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)} : {};
+  const r = await fetch(path, o);
+  const j = await r.json();
+  if(!r.ok) throw new Error(j.error || r.status);
+  return j;
+}
+function showErr(e){ document.getElementById('err').textContent = '错误：' + e.message; }
+function clearErr(){ document.getElementById('err').textContent = ''; }
+function unitLine(u){
+  return `${u.active}/${u.sub}${u.pid ? ' pid=' + u.pid : ''}${u.pushing ? ' 推流中' : ''}`;
+}
+async function load(){
+  clearErr();
+  try{
+    const s = await api('/api/status');
+    const m = document.getElementById('mode');
+    m.textContent = {live:'直播推流', replay:'文件轮播', idle:'空闲', conflict:'冲突！双推流'}[s.mode] || s.mode;
+    m.className = 'badge ' + (s.mode === 'idle' ? 'off' : s.mode === 'conflict' ? 'warn' : 'on');
+    document.getElementById('liveState').textContent = unitLine(s.live);
+    document.getElementById('liveTarget').textContent = s.live.target ? '目标 @' + s.live.target : '';
+    document.getElementById('replayState').textContent = unitLine(s.replay);
+    document.getElementById('replayArgs').textContent = s.replay.args || '';
+    document.getElementById('room').textContent = s.room.text || '(房间状态未知)';
+  }catch(e){ showErr(e); }
+}
+async function goMode(mode){
+  clearErr();
+  try{
+    const data = {mode};
+    if(mode === 'live') data.target = document.getElementById('target').value.trim();
+    else{
+      data.paths = document.getElementById('paths').value.split('\n').map(s => s.trim()).filter(Boolean);
+      data.encode = document.getElementById('encode').checked;
+    }
+    await api('/api/mode', data);
+    await load();
+  }catch(e){ showErr(e); }
+}
+async function goRoom(action){
+  clearErr();
+  try{
+    const data = {action};
+    if(action === 'start'){
+      data.area = parseInt(document.getElementById('area').value, 10);
+      data.title = document.getElementById('title').value.trim();
+    }else if(action === 'update'){
+      data.title = document.getElementById('newTitle').value.trim();
+    }
+    const r = await api('/api/room', data);
+    document.getElementById('roomOut').textContent = r.output || 'OK';
+    await load();
+  }catch(e){ showErr(e); }
+}
+async function stopAll(){ clearErr(); try{ await api('/api/stop', {}); await load(); }catch(e){ showErr(e); } }
+async function logs(){
+  clearErr();
+  try{
+    const w = document.getElementById('which').value;
+    const r = await api('/api/logs?which=' + w + '&tail=150');
+    document.getElementById('logOut').textContent = r.logs || '(空)';
+  }catch(e){ showErr(e); }
+}
+load();
+setInterval(load, 10000);
+</script>
+</body>
+</html>

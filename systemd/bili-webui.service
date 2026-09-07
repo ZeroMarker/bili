@@ -1,0 +1,19 @@
+[Unit]
+Description=Bili 推流管理 WebUI
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/bili
+EnvironmentFile=-%h/.config/bili/webui.env
+ExecStart=%h/bili/webui/app.py
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=%h/bili/logs
+
+[Install]
+WantedBy=default.target

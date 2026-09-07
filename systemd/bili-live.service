@@ -1,0 +1,21 @@
+[Unit]
+Description=Bili 直播推流 push.sh（TikTok 直播源 -> Bilibili）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/bili
+EnvironmentFile=%h/.config/bili/live.env
+ExecStart=%h/bili/push.sh $TARGET
+Restart=always
+RestartSec=10
+KillMode=mixed
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=%h/bili/logs
+
+[Install]
+WantedBy=default.target

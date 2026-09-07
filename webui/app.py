@@ -1,0 +1,323 @@
+#!/usr/bin/env python3
+"""Bili 推流管理 WebUI（独立实现，标准库 only，不依赖 tiktok 仓库）。
+
+管两个 systemd user unit（互斥，同时最多跑一个）：
+  bili-live.service    直播推流：push.sh <TARGET>（TikTok 直播源 -> Bilibili）
+  bili-replay.service  文件轮播：replay.sh <输入>... [--encode]（本地 mp4 -> Bilibili）
+
+另可开关 B 站房间（live.py start/stop/update/status）。
+
+安全：默认只监听 127.0.0.1，无应用层认证；公网发布必须经反代加 Basic Auth。
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+WEBUI_DIR = Path(__file__).resolve().parent
+INDEX_FILE = WEBUI_DIR / "index.html"
+LIVE_PY = PROJECT_ROOT / "live.py"
+CONFIG_DIR = Path.home() / ".config" / "bili"
+LIVE_ENV = CONFIG_DIR / "live.env"
+REPLAY_ENV = CONFIG_DIR / "replay.env"
+SESSION_FILE = PROJECT_ROOT / ".bilibili_session.json"
+BASHRC = Path.home() / ".bashrc"
+
+LIVE_UNIT = "bili-live.service"
+REPLAY_UNIT = "bili-replay.service"
+WEBUI_UNIT = "bili-webui.service"
+MANAGED_UNITS = {LIVE_UNIT, REPLAY_UNIT}
+LOGABLE_UNITS = {LIVE_UNIT, REPLAY_UNIT, WEBUI_UNIT}
+
+TARGET_RE = re.compile(r"[A-Za-z0-9_.]{1,64}")
+SYSTEMCTL = ["systemctl", "--user"]
+
+
+def run(argv: list[str], timeout: int = 20, check: bool = True) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(argv, text=True, capture_output=True, timeout=timeout, check=check)
+def _show(unit: str) -> dict[str, str]:
+    r = run([*SYSTEMCTL, "show", unit, "-p", "ActiveState,SubState,MainPID"], check=False)
+    props = dict(
+        line.split("=", 1) for line in r.stdout.splitlines() if "=" in line
+    )
+    return {
+        "active": props.get("ActiveState", "unknown"),
+        "sub": props.get("SubState", "unknown"),
+        "pid": int(props.get("MainPID", "0") or 0),
+    }
+
+
+def _has_ffmpeg(root_pid: int) -> bool | None:
+    """MainPID 下是否有 ffmpeg 子孙进程（即是否正在推流）。"""
+    if not root_pid:
+        return False
+    try:
+        children: dict[int, list[int]] = {}
+        comms: dict[int, str] = {}
+        for pid_dir in Path("/proc").iterdir():
+            if not pid_dir.name.isdigit():
+                continue
+            pid = int(pid_dir.name)
+            try:
+                ppid = int((pid_dir / "stat").read_text().split(")")[0].rsplit(" ", 1)[1])
+                comms[pid] = (pid_dir / "comm").read_text().strip()
+                children.setdefault(ppid, []).append(pid)
+            except (OSError, ValueError, IndexError):
+                continue
+    except OSError:
+        return None
+    stack = [root_pid]
+    while stack:
+        cur = stack.pop()
+        if comms.get(cur) == "ffmpeg" and cur != root_pid:
+            return True
+        stack.extend(children.get(cur, []))
+    return comms.get(root_pid) == "ffmpeg"
+
+
+def _read_env(path: Path, key: str) -> str:
+    try:
+        for line in path.read_text().splitlines():
+            if line.startswith(key + "="):
+                return line.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    return ""
+
+
+def _write_env(path: Path, lines: list[str]) -> None:
+    CONFIG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.write_text("# 由 webui 写入（600，不进 git）\n" + "".join(l + "\n" for l in lines))
+    path.chmod(0o600)
+
+
+def room_status() -> dict[str, object]:
+    r = run(["python3", str(LIVE_PY), "status"], timeout=30, check=False)
+    out = (r.stdout + r.stderr).strip()
+    return {"ok": r.returncode == 0, "text": out[-2000:]}
+
+
+def sync_push_env() -> None:
+    """开播后推流码已换：把会话文件里的新码同步回 ~/.bashrc（push.sh 兜底直读它）。"""
+    try:
+        data = json.loads(SESSION_FILE.read_text())
+        url, code = data["rtmp_addr"], data["rtmp_code"]
+    except (OSError, ValueError, KeyError) as exc:
+        raise RuntimeError(f"读取会话推流码失败: {exc}")
+    try:
+        text = BASHRC.read_text()
+    except OSError as exc:
+        raise RuntimeError(f"读取 ~/.bashrc 失败: {exc}")
+    new_text, n1 = re.subn(r'^export BILIBILI_PUSH_URL=.*$', f'export BILIBILI_PUSH_URL="{url}"', text, flags=re.M)
+    new_text, n2 = re.subn(r'^export BILIBILI_PUSH_CODE=.*$', f'export BILIBILI_PUSH_CODE="{code}"', new_text, flags=re.M)
+    if not (n1 and n2):
+        raise RuntimeError("~/.bashrc 里找不到 BILIBILI_PUSH_URL/CODE 导出项")
+    bak = BASHRC.with_name(".bashrc.bak.webui")
+    if not bak.exists():
+        bak.write_text(text)
+    BASHRC.write_text(new_text)
+
+
+def _ctl(*args: str) -> None:
+    r = run([*SYSTEMCTL, *args], check=False)
+    if r.returncode != 0:
+        raise RuntimeError((r.stderr or r.stdout).strip() or "systemctl 执行失败")
+
+
+def status() -> dict[str, object]:
+    live = _show(LIVE_UNIT)
+    replay = _show(REPLAY_UNIT)
+    live["pushing"] = _has_ffmpeg(live["pid"])
+    replay["pushing"] = _has_ffmpeg(replay["pid"])
+    live["target"] = _read_env(LIVE_ENV, "TARGET")
+    replay["args"] = _read_env(REPLAY_ENV, "REPLAY_ARGS")
+    if live["active"] == "active" and replay["active"] == "active":
+        mode = "conflict"
+    elif live["active"] == "active":
+        mode = "live"
+    elif replay["active"] == "active":
+        mode = "replay"
+    else:
+        mode = "idle"
+    return {"mode": mode, "live": live, "replay": replay, "room": room_status()}
+
+
+def set_mode(data: dict) -> dict[str, object]:
+    mode = str(data.get("mode", ""))
+    if mode == "live":
+        target = str(data.get("target", "")).strip()
+        if not TARGET_RE.fullmatch(target):
+            raise ValueError("TARGET 非法（允许字母数字 . _，≤64 字符）")
+        _write_env(LIVE_ENV, [f"TARGET={target}"])
+        _ctl("disable", "--now", REPLAY_UNIT)
+        _ctl("enable", "--now", LIVE_UNIT)
+    elif mode == "replay":
+        paths = data.get("paths", [])
+        if not isinstance(paths, list) or not paths or len(paths) > 32:
+            raise ValueError("paths 需为 1~32 个已存在的文件/目录")
+        if any(not isinstance(p, str) for p in paths):
+            raise ValueError("paths 含非字符串")
+        if any(re.search(r"[\s\x00-\x1f]", p) for p in paths):
+            raise ValueError("路径含空白字符（systemd 会按空白拆散），请改名")
+        abs_paths = [str(Path(p).expanduser()) for p in paths]
+        if any(not p.startswith("/") for p in abs_paths):
+            raise ValueError("只接受绝对路径")
+        for p in abs_paths:
+            pp = Path(p)
+            if pp.is_dir():
+                if not list(pp.glob("*.mp4")):
+                    raise ValueError(f"目录无 mp4：{p}")
+            elif not (pp.is_file() and pp.suffix == ".mp4"):
+                raise ValueError(f"不是 mp4 文件：{p}")
+        encode = bool(data.get("encode", False))
+        args = " ".join(abs_paths) + (" --encode" if encode else "")
+        _write_env(REPLAY_ENV, [f"REPLAY_ARGS={args}"])
+        _ctl("disable", "--now", LIVE_UNIT)
+        _ctl("enable", "--now", REPLAY_UNIT)
+    else:
+        raise ValueError('mode 只能是 "live" 或 "replay"')
+    return status()
+
+
+def stop_all() -> dict[str, object]:
+    _ctl("disable", "--now", LIVE_UNIT)
+    _ctl("disable", "--now", REPLAY_UNIT)
+    return status()
+
+
+def room(data: dict) -> dict[str, object]:
+    action = str(data.get("action", ""))
+    if action == "start":
+        try:
+            area = int(data.get("area", 0))
+        except (TypeError, ValueError):
+            raise ValueError("area 须为数字（live.py areas 查子分区 ID）")
+        title = str(data.get("title", "")).strip()
+        if not title or len(title) > 40 or "\n" in title:
+            raise ValueError("title 非空、≤40 字符、禁 emoji/换行")
+        r = run(["python3", str(LIVE_PY), "start", "--area", str(area), "--title", title],
+                timeout=90, check=False)
+        if r.returncode != 0:
+            raise RuntimeError((r.stdout + r.stderr).strip()[-2000:] or "开播失败")
+        sync_push_env()
+        return {"ok": True, "output": r.stdout.strip()[-2000:], "status": status()}
+    if action == "stop":
+        r = run(["python3", str(LIVE_PY), "stop"], timeout=60, check=False)
+        if r.returncode != 0:
+            raise RuntimeError((r.stdout + r.stderr).strip()[-2000:] or "停播失败")
+        _ctl("disable", "--now", LIVE_UNIT)
+        _ctl("disable", "--now", REPLAY_UNIT)
+        return {"ok": True, "output": r.stdout.strip()[-1000:], "status": status()}
+    if action == "update":
+        title = str(data.get("title", "")).strip()
+        if not title or len(title) > 40 or "\n" in title:
+            raise ValueError("title 非空、≤40 字符、禁 emoji/换行")
+        r = run(["python3", str(LIVE_PY), "update", "--title", title], timeout=60, check=False)
+        if r.returncode != 0:
+            raise RuntimeError((r.stdout + r.stderr).strip()[-2000:] or "改标题失败")
+        return {"ok": True, "output": r.stdout.strip()[-1000:]}
+    raise ValueError('action 只能是 "start"、"stop" 或 "update"')
+
+
+def unit_logs(which: str, tail: int) -> str:
+    if which == "live":
+        unit = LIVE_UNIT
+    elif which == "replay":
+        unit = REPLAY_UNIT
+    elif which == "webui":
+        unit = WEBUI_UNIT
+    else:
+        raise ValueError("which 只能是 live、replay 或 webui")
+    tail = max(1, min(int(tail), 1000))
+    r = run(["journalctl", "--user", "-u", unit, "-n", str(tail), "--no-pager", "-o", "short-iso"],
+            check=False)
+    return r.stdout[-100_000:]
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "BiliPushWebUI/1.0"
+
+    def send_json(self, code: int, payload: dict | list) -> None:
+        body = json.dumps(payload, ensure_ascii=False).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def authenticated(self) -> bool:
+        # 认证已移除：仅监听回环地址；公网发布必须经反代加 Basic Auth。
+        return True
+
+    def do_GET(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        try:
+            if parsed.path in ("/", "/index.html"):
+                body = INDEX_FILE.read_bytes()
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(body)
+            elif parsed.path == "/api/health":
+                self.send_json(HTTPStatus.OK, {"ok": True})
+            elif parsed.path == "/api/status":
+                self.send_json(HTTPStatus.OK, status())
+            elif parsed.path == "/api/logs":
+                q = parse_qs(parsed.query)
+                self.send_json(HTTPStatus.OK, {
+                    "logs": unit_logs(q.get("which", ["live"])[0],
+                                      int(q.get("tail", ["200"])[0] or "200")),
+                })
+            else:
+                self.send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+        except (ValueError, RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
+            self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+
+    def do_POST(self) -> None:  # noqa: N802
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length > 16_384:
+                raise ValueError("请求过大")
+            data = json.loads(self.rfile.read(length) or b"{}")
+            if self.path == "/api/mode":
+                self.send_json(HTTPStatus.OK, set_mode(data))
+            elif self.path == "/api/stop":
+                self.send_json(HTTPStatus.OK, stop_all())
+            elif self.path == "/api/room":
+                self.send_json(HTTPStatus.OK, room(data))
+            else:
+                self.send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+        except (ValueError, RuntimeError, json.JSONDecodeError,
+                OSError, subprocess.TimeoutExpired) as exc:
+            self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+
+    def log_message(self, fmt: str, *args: object) -> None:
+        print(f"{self.address_string()} - {fmt % args}")
+
+
+def main() -> None:
+    host = os.environ.get("BILI_WEBUI_HOST", "127.0.0.1")
+    port = int(os.environ.get("BILI_WEBUI_PORT", "8767"))
+    server = ThreadingHTTPServer((host, port), Handler)
+    print(f"Bili Push WebUI: http://{host}:{port}", flush=True)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
+
+
+if __name__ == "__main__":
+    main()

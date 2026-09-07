@@ -82,6 +82,26 @@ pkill -f replay.sh
 bash replay.sh "recordings/tiktok/<新频道目录>" --encode
 ```
 
+## WebUI（双模式 systemd 管理）
+
+独立实现（标准库 only，不碰 tiktok 仓库的 webui）。两种推流模式互斥，
+同时最多跑一个，由 WebUI 保证（启动一个会自动停掉并 disable 另一个）：
+
+- 直播推流：`bili-live.service`，`push.sh <TikTok用户名>`，未开播时每 60 秒轮询
+- 文件轮播：`bili-replay.service`，`replay.sh <文件|目录>... [--encode]`
+
+```bash
+bash systemd/install.sh   # 安装 3 个 user unit，bili-webui 直接 enable --now
+# 管理页 http://127.0.0.1:8767（仅回环，无认证；公网需经反代加 Basic Auth）
+公网：https://bili.20070809.xyz（Caddy 反代 + basicauth，与 tiktok 子域名同凭证）。
+```
+
+管理页可：启停两种模式、查看 unit 状态与 ffmpeg 是否在推、看 journal 日志、
+开播/停播/改标题（开播后自动把新推流码同步回 `~/.bashrc`）。
+手动操作：`systemctl --user enable --now bili-live.service`（先停另一个）。
+当前在播：文件轮播 `_yu_8_8`（2026-09-07 切自 hub 托管）。
+
+
 ## 轮播值守（录像打底 + 开播自动切直播）
 
 `watch.sh` 先循环播本地文件，同时每 60 秒探测 TikTok 是否开播；
@@ -114,7 +134,10 @@ ffmpeg -hide_banner -v error -i <file> -f null - 2>&1 | grep -c "concealing"
 
 ## 待办
 
-- [ ] systemd 自活：当前推流靠 hub detached 进程（随会话无关，但机器重启后停）。
-  根治需参照 `systemd/` 现有套路加 user service。条件：确认需要 24/7 不间断。
-- [ ] ai_haneda_0922 抓流：机房 IP 被 TikTok SlardarWAF/GroupBlock 封锁，
-  文档 5 种方法 + 引擎兜底链均失败。条件：拿到日本 VPS 或用户侧 `m3u8` 直链。
+- [x] systemd 自活 + WebUI（2026-09-07 落地，见上节）：`bili-live`（直播推流）
+  / `bili-replay`（文件轮播）/ `bili-webui`（管理页 8767）三个 user unit，
+  互斥由 WebUI 保证。中间态（已废弃的 `bili-watch.service`、hub 托管进程）
+  已清理；当前 `bili-replay` 在播 `_yu_8_8`。
+- [ ] ai_haneda_0922 抓流（2026-09-07 用正式引擎链复测仍无流）：账号存在
+  （昵称 羽田 あい），yt-dlp / impersonate / curl_cffi 兜底均报告未开播，
+  当前机房网络拿不到流。条件不变：拿到日本 VPS 或用户侧 `m3u8` 直链。

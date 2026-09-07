@@ -19,6 +19,10 @@ for cmd in yt-dlp ffmpeg; do
 done
 
 if [ -z "${BILIBILI_PUSH_URL:-}" ] || [ -z "${BILIBILI_PUSH_CODE:-}" ]; then
+    # 非交互 shell 下 ~/.bashrc 头部会提前 return，兜底直读其中的导出项（同 replay.sh）
+    eval "$(grep -E '^export BILIBILI_PUSH_(URL|CODE)=' ~/.bashrc 2>/dev/null)" || true
+fi
+if [ -z "${BILIBILI_PUSH_URL:-}" ] || [ -z "${BILIBILI_PUSH_CODE:-}" ]; then
     echo "错误：请先设置 BILIBILI_PUSH_URL 和 BILIBILI_PUSH_CODE"
     exit 1
 fi

@@ -1,0 +1,21 @@
+[Unit]
+Description=Bili 录制文件轮播 replay.sh（本地 mp4 循环 -> Bilibili）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/bili
+EnvironmentFile=%h/.config/bili/replay.env
+ExecStart=%h/bili/replay.sh $REPLAY_ARGS
+Restart=always
+RestartSec=10
+KillMode=mixed
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=%h/bili/logs
+
+[Install]
+WantedBy=default.target
