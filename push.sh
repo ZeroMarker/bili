@@ -39,8 +39,10 @@ echo "开始无人值守推流 TikTok @$USERNAME -> Bilibili"
 while true; do
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] 正在尝试获取直播源..."
 
-    # 1. 动态抓取最新的 m3u8 地址
-    STREAM_URL=$(yt-dlp --format "best" --get-url "https://www.tiktok.com/@${USERNAME}/live" 2>/dev/null | head -n1)
+    # 1. 动态抓取最新的 FLV 地址（需登录态过风控：impersonate + cookies，缺一不可）
+    TK_COOKIES="${TK_COOKIES:-$HOME/tiktok/cookies.txt}"
+    COOKIE_ARGS=(); [ -f "$TK_COOKIES" ] && COOKIE_ARGS=(--cookies "$TK_COOKIES")
+    STREAM_URL=$(yt-dlp --no-warnings -f "b[ext=flv]/best" --impersonate chrome "${COOKIE_ARGS[@]}" --get-url "https://www.tiktok.com/@${USERNAME}/live" 2>/dev/null | head -n1)
 
     if [ -z "$STREAM_URL" ]; then
         echo "  → 未监测到直播或抓取失败，60 秒后重试..."

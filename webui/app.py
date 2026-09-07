@@ -67,7 +67,7 @@ def _has_ffmpeg(root_pid: int) -> bool | None:
                 continue
             pid = int(pid_dir.name)
             try:
-                ppid = int((pid_dir / "stat").read_text().split(")")[0].rsplit(" ", 1)[1])
+                ppid = int((pid_dir / "stat").read_text().split(")", 1)[1].split()[1])
                 comms[pid] = (pid_dir / "comm").read_text().strip()
                 children.setdefault(ppid, []).append(pid)
             except (OSError, ValueError, IndexError):
@@ -132,6 +132,33 @@ def _ctl(*args: str) -> None:
         raise RuntimeError((r.stderr or r.stdout).strip() or "systemctl 执行失败")
 
 
+def _wait_inactive(unit: str, timeout: int = 35) -> bool:
+    import time
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _show(unit)["active"] != "active":
+            return True
+        time.sleep(1)
+    return False
+def probe_tiktok(target: str, timeout: int = 45) -> str:
+    """切源前先验流：与 push.sh 同链路（FLV + impersonate + cookies）。
+    拿不到地址就抛错，调用方保持现状不动。"""
+    cookies = os.environ.get("TK_COOKIES", str(Path.home() / "tiktok" / "cookies.txt"))
+    cmd = ["yt-dlp", "--no-warnings", "-f", "b[ext=flv]/best",
+           "--impersonate", "chrome"]
+    if Path(cookies).is_file():
+        cmd += ["--cookies", cookies]
+    cmd += ["--get-url", f"https://www.tiktok.com/@{target}/live"]
+    r = run(cmd, timeout=timeout, check=False)
+    for line in (r.stdout or "").splitlines():
+        line = line.strip()
+        if line.startswith("http"):
+            return line
+    raise ValueError(f"@{target} 当前未开播或抓不到流（已保持原推流不动）")
+
+
+
+
 def status() -> dict[str, object]:
     live = _show(LIVE_UNIT)
     replay = _show(REPLAY_UNIT)
@@ -156,9 +183,12 @@ def set_mode(data: dict) -> dict[str, object]:
         target = str(data.get("target", "")).strip()
         if not TARGET_RE.fullmatch(target):
             raise ValueError("TARGET 非法（允许字母数字 . _，≤64 字符）")
+        probe_tiktok(target)  # 先拿到串流地址再停旧起新，失败则保持现状
         _write_env(LIVE_ENV, [f"TARGET={target}"])
         _ctl("disable", "--now", REPLAY_UNIT)
-        _ctl("enable", "--now", LIVE_UNIT)
+        _wait_inactive(REPLAY_UNIT)
+        _ctl("enable", LIVE_UNIT)
+        _ctl("restart", LIVE_UNIT)  # 新 TARGET 只在新进程生效
     elif mode == "replay":
         paths = data.get("paths", [])
         if not isinstance(paths, list) or not paths or len(paths) > 32:
@@ -181,7 +211,9 @@ def set_mode(data: dict) -> dict[str, object]:
         args = " ".join(abs_paths) + (" --encode" if encode else "")
         _write_env(REPLAY_ENV, [f"REPLAY_ARGS={args}"])
         _ctl("disable", "--now", LIVE_UNIT)
-        _ctl("enable", "--now", REPLAY_UNIT)
+        _wait_inactive(LIVE_UNIT)
+        _ctl("enable", REPLAY_UNIT)
+        _ctl("restart", REPLAY_UNIT)  # 新 REPLAY_ARGS 只在新进程生效
     else:
         raise ValueError('mode 只能是 "live" 或 "replay"')
     return status()
@@ -208,6 +240,10 @@ def room(data: dict) -> dict[str, object]:
         if r.returncode != 0:
             raise RuntimeError((r.stdout + r.stderr).strip()[-2000:] or "开播失败")
         sync_push_env()
+        # 推流码已换：运行中的推流进程拿的还是旧码，必须重启才生效
+        for unit in (LIVE_UNIT, REPLAY_UNIT):
+            if _show(unit)["active"] == "active":
+                _ctl("restart", unit)
         return {"ok": True, "output": r.stdout.strip()[-2000:], "status": status()}
     if action == "stop":
         r = run(["python3", str(LIVE_PY), "stop"], timeout=60, check=False)
