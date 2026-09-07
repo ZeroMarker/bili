@@ -187,6 +187,8 @@ def set_mode(data: dict) -> dict[str, object]:
         _write_env(LIVE_ENV, [f"TARGET={target}"])
         _ctl("disable", "--now", REPLAY_UNIT)
         _wait_inactive(REPLAY_UNIT)
+        # 意图性重启不受 crash 熔断计数限制：先清 start-limit，否则连续切换直接 400 且单元变 failed
+        run([*SYSTEMCTL, "reset-failed", LIVE_UNIT], check=False)
         _ctl("enable", LIVE_UNIT)
         _ctl("restart", LIVE_UNIT)  # 新 TARGET 只在新进程生效
     elif mode == "replay":
@@ -212,6 +214,8 @@ def set_mode(data: dict) -> dict[str, object]:
         _write_env(REPLAY_ENV, [f"REPLAY_ARGS={args}"])
         _ctl("disable", "--now", LIVE_UNIT)
         _wait_inactive(LIVE_UNIT)
+        # 意图性重启不受 crash 熔断计数限制：先清 start-limit，否则连续切换直接 400 且单元变 failed
+        run([*SYSTEMCTL, "reset-failed", REPLAY_UNIT], check=False)
         _ctl("enable", REPLAY_UNIT)
         _ctl("restart", REPLAY_UNIT)  # 新 REPLAY_ARGS 只在新进程生效
     else:
