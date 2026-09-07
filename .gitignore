@@ -216,3 +216,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Bilibili live session (login cookies + stream keys)
+.bilibili_session.json
+logs/
+*.log
