@@ -16,6 +16,10 @@ import json
 import os
 import re
 import subprocess
+import shlex
+import tempfile
+import threading
+from functools import wraps
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -29,7 +33,24 @@ CONFIG_DIR = Path.home() / ".config" / "bili"
 LIVE_ENV = CONFIG_DIR / "live.env"
 REPLAY_ENV = CONFIG_DIR / "replay.env"
 SESSION_FILE = PROJECT_ROOT / ".bilibili_session.json"
-BASHRC = Path.home() / ".bashrc"
+PUSH_ENV = CONFIG_DIR / "push.env"
+CONTROL_LOCK = threading.Lock()
+
+
+class ControlBusy(RuntimeError):
+    pass
+
+
+def exclusive(fn):
+    @wraps(fn)
+    def wrapped(*args, **kwargs):
+        if not CONTROL_LOCK.acquire(blocking=False):
+            raise ControlBusy("另一项操作正在执行，请完成后重试")
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            CONTROL_LOCK.release()
+    return wrapped
 
 LIVE_UNIT = "bili-live.service"
 REPLAY_UNIT = "bili-replay.service"
@@ -95,8 +116,13 @@ def _read_env(path: Path, key: str) -> str:
 
 def _write_env(path: Path, lines: list[str]) -> None:
     CONFIG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
-    path.write_text("# 由 webui 写入（600，不进 git）\n" + "".join(l + "\n" for l in lines))
-    path.chmod(0o600)
+    fd, name = tempfile.mkstemp(dir=path.parent, prefix=".bili-")
+    try:
+        with os.fdopen(fd, "w") as stream:
+            stream.write("# 由 webui 写入（600，不进 git）\n" + "".join(l + "\n" for l in lines))
+        os.replace(name, path)
+    finally:
+        Path(name).unlink(missing_ok=True)
 
 
 def room_status() -> dict[str, object]:
@@ -106,24 +132,18 @@ def room_status() -> dict[str, object]:
 
 
 def sync_push_env() -> None:
-    """开播后推流码已换：把会话文件里的新码同步回 ~/.bashrc（push.sh 兜底直读它）。"""
+    """把最新推流码写入独立的私有配置，不修改用户 shell 配置。"""
     try:
         data = json.loads(SESSION_FILE.read_text())
         url, code = data["rtmp_addr"], data["rtmp_code"]
-    except (OSError, ValueError, KeyError) as exc:
-        raise RuntimeError(f"读取会话推流码失败: {exc}")
-    try:
-        text = BASHRC.read_text()
-    except OSError as exc:
-        raise RuntimeError(f"读取 ~/.bashrc 失败: {exc}")
-    new_text, n1 = re.subn(r'^export BILIBILI_PUSH_URL=.*$', f'export BILIBILI_PUSH_URL="{url}"', text, flags=re.M)
-    new_text, n2 = re.subn(r'^export BILIBILI_PUSH_CODE=.*$', f'export BILIBILI_PUSH_CODE="{code}"', new_text, flags=re.M)
-    if not (n1 and n2):
-        raise RuntimeError("~/.bashrc 里找不到 BILIBILI_PUSH_URL/CODE 导出项")
-    bak = BASHRC.with_name(".bashrc.bak.webui")
-    if not bak.exists():
-        bak.write_text(text)
-    BASHRC.write_text(new_text)
+        if not all(isinstance(v, str) and v and "\n" not in v for v in (url, code)):
+            raise ValueError("推流配置为空或格式不正确")
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise RuntimeError("读取会话推流码失败，请重新开播") from exc
+    _write_env(PUSH_ENV, [
+        f"export BILIBILI_PUSH_URL={shlex.quote(url)}",
+        f"export BILIBILI_PUSH_CODE={shlex.quote(code)}",
+    ])
 
 
 def ensure_room_live() -> None:
@@ -147,7 +167,7 @@ def ensure_room_live() -> None:
 
 
 def _ctl(*args: str) -> None:
-    r = run([*SYSTEMCTL, *args], check=False)
+    r = run([*SYSTEMCTL, *args], timeout=45, check=False)
     if r.returncode != 0:
         raise RuntimeError((r.stderr or r.stdout).strip() or "systemctl 执行失败")
 
@@ -156,7 +176,7 @@ def _wait_inactive(unit: str, timeout: int = 35) -> bool:
     import time
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        if _show(unit)["active"] != "active":
+        if _show(unit)["active"] in ("inactive", "failed"):
             return True
         time.sleep(1)
     return False
@@ -197,6 +217,7 @@ def status() -> dict[str, object]:
     return {"mode": mode, "live": live, "replay": replay, "room": room_status()}
 
 
+@exclusive
 def set_mode(data: dict) -> dict[str, object]:
     mode = str(data.get("mode", ""))
     if mode == "live":
@@ -208,7 +229,8 @@ def set_mode(data: dict) -> dict[str, object]:
         ensure_room_live()  # 关播时用上次分区/标题自动开播，否则切了也推不上去
         _write_env(LIVE_ENV, [f"TARGET={target}"])
         _ctl("disable", "--now", REPLAY_UNIT)
-        _wait_inactive(REPLAY_UNIT)
+        if not _wait_inactive(REPLAY_UNIT):
+            raise RuntimeError("文件轮播尚未停止，已取消启动直播推流")
         # 意图性重启不受 crash 熔断计数限制：先清 start-limit，否则连续切换直接 400 且单元变 failed
         run([*SYSTEMCTL, "reset-failed", LIVE_UNIT], check=False)
         _ctl("enable", LIVE_UNIT)
@@ -242,7 +264,8 @@ def set_mode(data: dict) -> dict[str, object]:
         args = " ".join(abs_paths) + (" --encode" if encode else "")
         _write_env(REPLAY_ENV, [f"REPLAY_ARGS={args}"])
         _ctl("disable", "--now", LIVE_UNIT)
-        _wait_inactive(LIVE_UNIT)
+        if not _wait_inactive(LIVE_UNIT):
+            raise RuntimeError("直播推流尚未停止，已取消启动文件轮播")
         # 意图性重启不受 crash 熔断计数限制：先清 start-limit，否则连续切换直接 400 且单元变 failed
         run([*SYSTEMCTL, "reset-failed", REPLAY_UNIT], check=False)
         _ctl("enable", REPLAY_UNIT)
@@ -252,12 +275,14 @@ def set_mode(data: dict) -> dict[str, object]:
     return status()
 
 
+@exclusive
 def stop_all() -> dict[str, object]:
     _ctl("disable", "--now", LIVE_UNIT)
     _ctl("disable", "--now", REPLAY_UNIT)
     return status()
 
 
+@exclusive
 def room(data: dict) -> dict[str, object]:
     action = str(data.get("action", ""))
     if action == "start":
@@ -265,6 +290,8 @@ def room(data: dict) -> dict[str, object]:
             area = int(data.get("area", 0))
         except (TypeError, ValueError):
             raise ValueError("area 须为数字（live.py areas 查子分区 ID）")
+        if area <= 0:
+            raise ValueError("area 须为正整数")
         title = str(data.get("title", "")).strip()
         if not title or len(title) > 40 or "\n" in title:
             raise ValueError("title 非空、≤40 字符、禁 emoji/换行")
@@ -356,9 +383,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         try:
             length = int(self.headers.get("Content-Length", "0"))
-            if length > 16_384:
+            if length < 0 or length > 16_384:
                 raise ValueError("请求过大")
             data = json.loads(self.rfile.read(length) or b"{}")
+            if not isinstance(data, dict):
+                raise ValueError("请求内容须为 JSON 对象")
             if self.path == "/api/mode":
                 self.send_json(HTTPStatus.OK, set_mode(data))
             elif self.path == "/api/stop":
@@ -367,6 +396,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(HTTPStatus.OK, room(data))
             else:
                 self.send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+        except ControlBusy as exc:
+            self.send_json(HTTPStatus.CONFLICT, {"error": str(exc)})
         except (ValueError, RuntimeError, json.JSONDecodeError,
                 OSError, subprocess.TimeoutExpired) as exc:
             self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})

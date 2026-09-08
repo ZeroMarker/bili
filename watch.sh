@@ -20,6 +20,11 @@ fi
 
 # shellcheck disable=SC1090
 [ -f ~/.bashrc ] && source ~/.bashrc
+# WebUI 管理的推流配置优先于旧的 ~/.bashrc 导出项。
+if [ -f "$HOME/.config/bili/push.env" ]; then
+    source "$HOME/.config/bili/push.env"
+fi
+
 if [ -z "${BILIBILI_PUSH_URL:-}" ] || [ -z "${BILIBILI_PUSH_CODE:-}" ]; then
     # shellcheck disable=SC1090
     eval "$(grep -E '^export BILIBILI_PUSH_(URL|CODE)=' ~/.bashrc 2>/dev/null)" || true

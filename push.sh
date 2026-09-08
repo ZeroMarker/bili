@@ -18,6 +18,11 @@ for cmd in yt-dlp ffmpeg; do
     fi
 done
 
+# WebUI 管理的推流配置优先于旧的 ~/.bashrc 导出项。
+if [ -f "$HOME/.config/bili/push.env" ]; then
+    source "$HOME/.config/bili/push.env"
+fi
+
 if [ -z "${BILIBILI_PUSH_URL:-}" ] || [ -z "${BILIBILI_PUSH_CODE:-}" ]; then
     # 非交互 shell 下 ~/.bashrc 头部会提前 return，兜底直读其中的导出项（同 replay.sh）
     eval "$(grep -E '^export BILIBILI_PUSH_(URL|CODE)=' ~/.bashrc 2>/dev/null)" || true

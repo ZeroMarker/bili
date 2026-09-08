@@ -107,6 +107,15 @@ pre{background:var(--surface-container-high);color:var(--on-surface);border-radi
 #snack.show{transform:translateX(-50%) translateY(0);opacity:1}
 #snack.err{background:var(--error);color:var(--on-error)}
 .foot{text-align:center;font-size:12px;color:var(--on-surface-variant)}
+
+@media(min-width:1000px){
+  .wrap{max-width:1160px;display:grid;grid-template-columns:1fr 1fr;align-items:start}
+  .wrap>.progress,.wrap>.notice,.wrap>.card:nth-child(3),.wrap>.foot{grid-column:1/-1}
+}
+.notice{padding:14px 18px;border-radius:16px;background:var(--secondary-container);color:var(--on-secondary-container);font-size:14px;line-height:1.6}
+.notice.error{background:var(--error-container);color:var(--error)}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid var(--primary);outline-offset:3px}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
 </style>
 </head>
 <body>
@@ -122,13 +131,14 @@ pre{background:var(--surface-container-high);color:var(--on-surface);border-radi
 </div>
 
 <div class="wrap">
-  <div class="progress" id="bar"><i></i></div>
+  <div class="progress" id="bar" aria-hidden="true"><i></i></div>
+  <div id="operation" class="notice" role="status" aria-live="polite">选择直播推流或文件轮播。切换前会验证输入并停止另一种模式。</div>
 
   <div class="card">
     <h2><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm-2 14.5v-9l7.5 4.5-7.5 4.5z"/></svg>当前状态</h2>
     <div class="mode-hero">
       <span class="mode-dot" id="modeDot"></span>
-      <div><div class="mode-name" id="mode">…</div><div class="mode-hint">每 10 秒自动刷新</div></div>
+      <div><div class="mode-name" id="mode">…</div><div class="mode-hint" id="refreshState" aria-live="polite">正在连接…</div></div>
     </div>
     <div class="row">
       <div class="svc"><div class="t">直播推流 <span class="pill" id="livePill">…</span></div>
@@ -167,13 +177,13 @@ pre{background:var(--surface-container-high);color:var(--on-surface);border-radi
     <h2><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3 2 8.5V9h20v-.5L12 3zM5 10v8H3v3h18v-3h-2v-8h-3v8h-3v-8h-3v8H7v-8H5z"/></svg>房间</h2>
     <div class="row">
       <div class="field" style="max-width:190px"><label>子分区 ID</label>
-        <input id="area" type="number" placeholder="live.py areas 查"></div>
+        <input id="area" type="number" min="1" step="1" placeholder="live.py areas 查"></div>
       <div class="field"><label>标题（纯文本，禁 emoji，≤40 字）</label>
-        <input id="title" type="text"></div>
+        <input id="title" type="text" maxlength="40"></div>
       <button class="btn-fill" id="btnStart" onclick="goRoom('start')">开播</button>
     </div>
     <div class="row">
-      <div class="field"><label>新标题</label><input id="newTitle" type="text"></div>
+      <div class="field"><label>新标题</label><input id="newTitle" type="text" maxlength="40"></div>
       <button class="btn-tonal" id="btnUpdate" onclick="goRoom('update')">改标题</button>
       <button class="btn-danger" id="btnStop" onclick="goRoom('stop')">停播（同时停推流）</button>
     </div>
@@ -207,18 +217,20 @@ function setBusy(on){
   for(const id of ['btnLive','btnReplay','btnStart','btnUpdate','btnStop','btnLogs','btnStopAll','btnRefresh','forceLive'])
     document.getElementById(id).disabled = !!busy;
 }
-async function api(path, data){
-  setBusy(true);
+async function api(path, data, background = false){
+  if(!background) setBusy(true);
   try{
     const o = data ? {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(data)} : {};
     const r = await fetch(path, o);
     const j = await r.json();
     if(!r.ok) throw new Error(j.error || r.status);
     return j;
-  }finally{ setBusy(false); }
+  }finally{ if(!background) setBusy(false); }
 }
 let snackT = null;
 function snack(msg, isErr){
+  const notice = document.getElementById('operation');
+  notice.textContent = msg; notice.className = 'notice' + (isErr ? ' error' : '');
   const el = document.getElementById('snack');
   el.textContent = msg; el.className = isErr ? 'err' : '';
   requestAnimationFrame(() => el.classList.add('show'));
@@ -230,9 +242,14 @@ function pill(el, text, cls){ const p = document.getElementById(el); p.textConte
 function unitLine(u){
   return `${u.active}/${u.sub}${u.pid ? ' pid=' + u.pid : ''}${u.pushing ? ' · 推流中' : ''}`;
 }
-async function load(){
+let loading = false;
+async function load(background = false){
+  if(loading || (background && (busy || document.hidden))) return;
+  loading = true;
   try{
-    const s = await api('/api/status');
+    const s = await api('/api/status', undefined, background);
+    document.getElementById('refreshState').textContent = '更新于 ' + new Date().toLocaleTimeString() + ' · 每 10 秒刷新';
+    if(!document.getElementById('target').value && s.live.target) document.getElementById('target').value = s.live.target;
     const names = {live:'直播推流', replay:'文件轮播', idle:'空闲', conflict:'冲突！双推流'};
     document.getElementById('mode').textContent = names[s.mode] || s.mode;
     document.getElementById('modeDot').className = 'mode-dot' + (s.mode === 'idle' ? '' : s.mode === 'conflict' ? ' warn' : ' on');
@@ -243,10 +260,14 @@ async function load(){
     pill('livePill', s.live.pushing ? '推流中' : s.live.active === 'active' ? '待命' : '停止', s.live.pushing ? 'live' : s.live.active === 'active' ? '' : 'bad');
     pill('replayPill', s.replay.pushing ? '推流中' : s.replay.active === 'active' ? '待命' : '停止', s.replay.pushing ? 'live' : s.replay.active === 'active' ? '' : 'bad');
     document.getElementById('room').textContent = s.room.text || '(房间状态未知)';
-  }catch(e){ showErr(e); }
+  }catch(e){
+    document.getElementById('refreshState').textContent = '刷新失败 · 当前显示为上次结果';
+    if(!background) showErr(e);
+  }finally{ loading = false; }
 }
 async function goMode(mode){
   try{
+    saveDraft();
     const data = {mode};
     if(mode === 'live'){
       data.target = document.getElementById('target').value.trim();
@@ -257,6 +278,7 @@ async function goMode(mode){
       data.paths = document.getElementById('paths').value.split('\n').map(s => s.trim()).filter(Boolean);
       data.encode = document.getElementById('encode').checked;
     }
+    if(mode === 'replay') snack('正在验证文件并切换到轮播，请稍候…');
     await api('/api/mode', data);
     snack(mode === 'live' ? '已切换到直播推流' : '已切换到文件轮播');
     await load();
@@ -264,10 +286,12 @@ async function goMode(mode){
 }
 async function goRoom(action){
   try{
+    saveDraft();
     const data = {action};
     if(action === 'start'){
       data.area = parseInt(document.getElementById('area').value, 10);
       data.title = document.getElementById('title').value.trim();
+      if(!Number.isInteger(data.area) || data.area <= 0 || !data.title){ showErr(new Error('请填写有效分区 ID 和标题')); return; }
     }else if(action === 'update'){
       data.title = document.getElementById('newTitle').value.trim();
     }
@@ -279,7 +303,7 @@ async function goRoom(action){
     await load();
   }catch(e){ showErr(e); }
 }
-async function stopAll(){ try{ await api('/api/stop', {}); snack('已停止全部推流'); await load(); }catch(e){ showErr(e); } }
+async function stopAll(){ try{ await api('/api/stop', {}); snack('已停止全部推流，房间开播状态保持原样'); await load(); }catch(e){ showErr(e); } }
 async function logs(){
   try{
     const w = document.getElementById('which').value;
@@ -288,8 +312,29 @@ async function logs(){
     out.hidden = false; out.textContent = r.logs || '(空)';
   }catch(e){ showErr(e); }
 }
+const draftIds = ['target','paths','encode','area','title','newTitle'];
+function saveDraft(){
+  try{
+    const draft = {};
+    for(const id of draftIds){ const el = document.getElementById(id); draft[id] = el.type === 'checkbox' ? el.checked : el.value; }
+    localStorage.setItem('bili-form-v1', JSON.stringify(draft));
+  }catch(e){ /* 浏览器禁用存储时仍可使用 */ }
+}
+try{
+  const draft = JSON.parse(localStorage.getItem('bili-form-v1') || '{}');
+  for(const id of draftIds){
+    const el = document.getElementById(id);
+    if(el.type === 'checkbox') el.checked = draft[id] === true;
+    else if(typeof draft[id] === 'string') el.value = draft[id];
+  }
+}catch(e){ /* 忽略损坏的旧草稿 */ }
+for(const id of draftIds) document.getElementById(id).addEventListener('input', saveDraft);
+for(const label of document.querySelectorAll('.field label')){
+  const input = label.parentElement.querySelector('input,textarea');
+  if(input) label.htmlFor = input.id;
+}
 load();
-setInterval(load, 10000);
+setInterval(() => load(true), 10000);
 </script>
 </body>
 </html>

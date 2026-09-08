@@ -13,6 +13,11 @@ fi
 
 SOOP_URL="$1"
 
+# WebUI 管理的推流配置优先于旧的 ~/.bashrc 导出项。
+if [ -f "$HOME/.config/bili/push.env" ]; then
+    source "$HOME/.config/bili/push.env"
+fi
+
 # Bilibili 推流地址
 if [ -z "${BILIBILI_PUSH_URL:-}" ] || [ -z "${BILIBILI_PUSH_CODE:-}" ]; then
     echo "错误：请先设置 BILIBILI_PUSH_URL 和 BILIBILI_PUSH_CODE"

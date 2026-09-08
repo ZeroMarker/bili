@@ -37,7 +37,7 @@ bash systemd/install.sh   # 装 3 个 user unit，bili-webui 直接 enable --now
 - 本地：`http://127.0.0.1:8767`（仅回环，无应用层认证）
 - 公网：`https://bili.20070809.xyz`（Caddy 反代 + basicauth，与站群同凭证）
 
-管理页可做：启停两种模式、看 unit 状态与 ffmpeg 是否在推、看 journal 日志、开播/停播/改标题。开播后自动把新推流码同步回 `~/.bashrc`。手动等价操作：`systemctl --user enable --now bili-live.service`（先停另一个）。
+管理页可做：启停两种模式、看 unit 状态与 ffmpeg 是否在推、看 journal 日志、开播/停播/改标题。开播后自动把新推流码保存到 `~/.config/bili/push.env`（权限 600）。手动等价操作：`systemctl --user enable --now bili-live.service`（先停另一个）。
 
 API（JSON）：`GET /api/health|status|logs?which=live|replay|webui&tail=`，
 `POST /api/mode {mode,target|paths,encode}`、`POST /api/stop`、
@@ -45,10 +45,12 @@ API（JSON）：`GET /api/health|status|logs?which=live|replay|webui&tail=`，
 
 ## 推流密钥来源
 
-转推脚本拼接 `BILIBILI_PUSH_URL` + `BILIBILI_PUSH_CODE`。来源按优先级：进程环境 →
+转推脚本拼接 `BILIBILI_PUSH_URL` + `BILIBILI_PUSH_CODE`。来源按优先级：WebUI 的 `~/.config/bili/push.env` → 进程环境及
 `~/.bashrc` 的 `source` → 兜底直读 `~/.bashrc` 中的导出项（`push.sh`/`replay.sh`/
 `watch.sh` 均有该兜底，systemd 下靠它工作）。每次 `live.py start` 推流码都会换：
-命令行方式需重跑 `--print-export` 并更新 `~/.bashrc`；WebUI 开播自动同步。
+命令行开播后需用会话文件中的新码更新配置：已有 `~/.config/bili/push.env` 时更新该文件，否则更新 `~/.bashrc`。`--print-export` 不回显完整推流码。WebUI 开播自动同步到独立配置，无需预先编辑 `.bashrc`。
+
+WebUI 支持表单草稿记忆、后台刷新和持续操作反馈。控制请求互斥，另一项操作未完成时返回 409；多页面操作不会同时启动两路推流。升级后运行 `bash systemd/install.sh` 更新 unit，并执行 `systemctl --user restart bili-webui.service` 加载新后端。
 
 ```bash
 export BILIBILI_PUSH_URL="rtmp://txy3.live-push.bilivideo.com/live-bvc/"

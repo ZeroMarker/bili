@@ -13,7 +13,7 @@ RestartSec=5
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths=%h/bili/logs
+ReadWritePaths=%h/bili %h/.config/bili
 
 [Install]
 WantedBy=default.target
