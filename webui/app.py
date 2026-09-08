@@ -28,6 +28,9 @@ from urllib.parse import parse_qs, urlparse
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 WEBUI_DIR = Path(__file__).resolve().parent
 INDEX_FILE = WEBUI_DIR / "index.html"
+MANIFEST_FILE = WEBUI_DIR / "manifest.webmanifest"
+SW_FILE = WEBUI_DIR / "sw.js"
+ICONS_DIR = WEBUI_DIR / "icons"
 LIVE_PY = PROJECT_ROOT / "live.py"
 CONFIG_DIR = Path.home() / ".config" / "bili"
 LIVE_ENV = CONFIG_DIR / "live.env"
@@ -35,6 +38,16 @@ REPLAY_ENV = CONFIG_DIR / "replay.env"
 SESSION_FILE = PROJECT_ROOT / ".bilibili_session.json"
 PUSH_ENV = CONFIG_DIR / "push.env"
 CONTROL_LOCK = threading.Lock()
+
+# PWA 静态资源：URL 路径 -> (文件, MIME, Cache-Control)。作用域锁死 WEBUI_DIR，防目录穿越。
+PWA_STATIC: dict[str, tuple[Path, str, str]] = {
+    "/manifest.webmanifest": (MANIFEST_FILE, "application/manifest+json; charset=utf-8", "public, max-age=3600"),
+    "/sw.js": (SW_FILE, "application/javascript; charset=utf-8", "no-cache"),
+    "/icons/icon-192.png": (ICONS_DIR / "icon-192.png", "image/png", "public, max-age=86400, immutable"),
+    "/icons/icon-512.png": (ICONS_DIR / "icon-512.png", "image/png", "public, max-age=86400, immutable"),
+    "/icons/icon.svg": (ICONS_DIR / "icon.svg", "image/svg+xml; charset=utf-8", "public, max-age=86400, immutable"),
+    "/favicon.ico": (ICONS_DIR / "icon-192.png", "image/png", "public, max-age=86400, immutable"),
+}
 
 
 class ControlBusy(RuntimeError):
@@ -354,17 +367,26 @@ class Handler(BaseHTTPRequestHandler):
         # 认证已移除：仅监听回环地址；公网发布必须经反代加 Basic Auth。
         return True
 
+    def send_file(self, path: Path, mime: str, cache: str, extra: dict[str, str] | None = None) -> None:
+        body = path.read_bytes()
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", mime)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", cache)
+        for key, value in (extra or {}).items():
+            self.send_header(key, value)
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         try:
             if parsed.path in ("/", "/index.html"):
-                body = INDEX_FILE.read_bytes()
-                self.send_response(HTTPStatus.OK)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.send_header("Cache-Control", "no-store")
-                self.end_headers()
-                self.wfile.write(body)
+                self.send_file(INDEX_FILE, "text/html; charset=utf-8", "no-store")
+            elif parsed.path in PWA_STATIC:
+                path, mime, cache = PWA_STATIC[parsed.path]
+                extra = {"Service-Worker-Allowed": "/"} if parsed.path == "/sw.js" else None
+                self.send_file(path, mime, cache, extra)
             elif parsed.path == "/api/health":
                 self.send_json(HTTPStatus.OK, {"ok": True})
             elif parsed.path == "/api/status":
