@@ -32,6 +32,7 @@ MANIFEST_FILE = WEBUI_DIR / "manifest.webmanifest"
 SW_FILE = WEBUI_DIR / "sw.js"
 ICONS_DIR = WEBUI_DIR / "icons"
 LIVE_PY = PROJECT_ROOT / "live.py"
+GET_STREAM_PY = PROJECT_ROOT / "get_stream.py"
 CONFIG_DIR = Path.home() / ".config" / "bili"
 LIVE_ENV = CONFIG_DIR / "live.env"
 REPLAY_ENV = CONFIG_DIR / "replay.env"
@@ -46,6 +47,8 @@ PWA_STATIC: dict[str, tuple[Path, str, str]] = {
     "/icons/icon-192.png": (ICONS_DIR / "icon-192.png", "image/png", "public, max-age=86400, immutable"),
     "/icons/icon-512.png": (ICONS_DIR / "icon-512.png", "image/png", "public, max-age=86400, immutable"),
     "/icons/icon.svg": (ICONS_DIR / "icon.svg", "image/svg+xml; charset=utf-8", "public, max-age=86400, immutable"),
+    "/icons/icon-maskable-512.png": (ICONS_DIR / "icon-maskable-512.png", "image/png", "public, max-age=86400, immutable"),
+    "/icons/apple-touch-icon.png": (ICONS_DIR / "apple-touch-icon.png", "image/png", "public, max-age=86400, immutable"),
     "/favicon.ico": (ICONS_DIR / "icon-192.png", "image/png", "public, max-age=86400, immutable"),
 }
 
@@ -193,16 +196,13 @@ def _wait_inactive(unit: str, timeout: int = 35) -> bool:
             return True
         time.sleep(1)
     return False
-def probe_tiktok(target: str, timeout: int = 45) -> str:
-    """切源前先验流：与 push.sh 同链路（FLV + impersonate + cookies）。
+def probe_tiktok(target: str, timeout: int = 150) -> str:
+    """切源前先验流：与 push.sh 同链路（get_stream.py 四级兜底）。
     拿不到地址就抛错，调用方保持现状不动。"""
-    cookies = os.environ.get("TK_COOKIES", str(Path.home() / "tiktok" / "cookies.txt"))
-    cmd = ["yt-dlp", "--no-warnings", "-f", "b[ext=flv]/best",
-           "--impersonate", "chrome"]
-    if Path(cookies).is_file():
-        cmd += ["--cookies", cookies]
-    cmd += ["--get-url", f"https://www.tiktok.com/@{target}/live"]
-    r = run(cmd, timeout=timeout, check=False)
+    try:
+        r = run(["python3", str(GET_STREAM_PY), target], timeout=timeout, check=False)
+    except subprocess.TimeoutExpired as exc:
+        raise ValueError(f"@{target} 验流超时（已保持原推流不动）") from exc
     for line in (r.stdout or "").splitlines():
         line = line.strip()
         if line.startswith("http"):
