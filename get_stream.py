@@ -20,6 +20,12 @@ import sys
 from pathlib import Path
 
 ATTEMPT_TIMEOUT = 25
+STREAM_SCHEMES = ("http://", "https://", "rtmp://", "rtmps://")
+
+
+def is_stream_url(value: object) -> bool:
+    """Return whether *value* is a pull URL supported by ffmpeg."""
+    return isinstance(value, str) and value.lower().startswith(STREAM_SCHEMES)
 
 
 def _run_capture(cmd: list[str], timeout: int) -> str | None:
@@ -34,7 +40,7 @@ def _run_capture(cmd: list[str], timeout: int) -> str | None:
         print(f"  [失败] {cmd[-1]}：{err[-1] if err else f'exit {r.returncode}'}", file=sys.stderr)
         return None
     lines = (r.stdout or "").strip().splitlines()
-    if not lines or not lines[0].strip().startswith("http"):
+    if not lines or not is_stream_url(lines[0].strip()):
         print(f"  [失败] {cmd[-1]}：无可用地址", file=sys.stderr)
         return None
     return lines[0].strip()
@@ -52,7 +58,7 @@ def _method5(username: str) -> str | None:
     except Exception as exc:  # noqa: BLE001 — 兜底链不能被未知异常打断
         print(f"  [失败] 方法5：{exc}", file=sys.stderr)
         return None
-    if url and url.startswith("http"):
+    if is_stream_url(url):
         return url
     print("  [失败] 方法5：无可用地址", file=sys.stderr)
     return None

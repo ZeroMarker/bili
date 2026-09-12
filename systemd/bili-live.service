@@ -5,9 +5,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/bili
+WorkingDirectory=@PROJECT_ROOT@
 EnvironmentFile=%h/.config/bili/live.env
-ExecStart=%h/bili/push.sh $TARGET
+ExecStart=@PROJECT_ROOT@/push.sh $TARGET
 Restart=always
 RestartSec=10
 KillMode=mixed
@@ -15,7 +15,7 @@ TimeoutStopSec=30
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths=%h/bili/logs
+ReadWritePaths=@PROJECT_ROOT@/logs
 
 [Install]
 WantedBy=default.target

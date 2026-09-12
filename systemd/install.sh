@@ -21,8 +21,30 @@ if ! command -v systemctl >/dev/null 2>&1; then
 fi
 
 install -d -m 700 "$CONF_DIR" "$UNIT_DIR" "$PROJECT_ROOT/logs"
+
+# Unit 模板不能假定仓库位于 ~/bili。替换真实路径，并使用 systemd
+# 支持的 C 风格转义保护空白及其他特殊字符。
+escape_unit_value() {
+    local value="$1"
+    value="${value//\\/\\x5c}"
+    value="${value// /\\x20}"
+    value="${value//$'\t'/\\x09}"
+    value="${value//$'\n'/\\x0a}"
+    value="${value//\"/\\x22}"
+    value="${value//\'/\\x27}"
+    value="${value//%/%%}"
+    value="${value//&/\\&}"
+    printf '%s' "$value"
+}
+
+ESCAPED_PROJECT_ROOT="$(escape_unit_value "$PROJECT_ROOT")"
 for unit in bili-live.service bili-replay.service bili-webui.service; do
-    install -m 644 "$SCRIPT_DIR/$unit" "$UNIT_DIR/$unit"
+    rendered="$(mktemp "$UNIT_DIR/.${unit}.XXXXXX")"
+    while IFS= read -r line || [ -n "$line" ]; do
+        printf '%s\n' "${line//@PROJECT_ROOT@/$ESCAPED_PROJECT_ROOT}"
+    done < "$SCRIPT_DIR/$unit" > "$rendered"
+    chmod 644 "$rendered"
+    mv -f "$rendered" "$UNIT_DIR/$unit"
 done
 for pair in "live.env:TARGET=" "replay.env:REPLAY_ARGS="; do
     file="${pair%%:*}"; key="${pair#*:}"

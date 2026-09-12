@@ -110,3 +110,9 @@ ffmpeg -hide_banner -v error -i <file> -f null - 2>&1 | grep -c "concealing"
 - [ ] ai_haneda_0922 抓流：机房 IP 被 TikTok SlardarWAF/GroupBlock 封锁，
   2026-09-07 用正式引擎链（yt-dlp / impersonate / curl_cffi 兜底）复测仍无流
   （账号存在，昵称 羽田 あい）。条件：拿到日本 VPS 或用户侧 `m3u8` 直链。
+
+## 许可证
+
+除另有声明外，本项目使用根目录 `LICENSE` 中的 MIT License。
+`live.py` 是 GPL-2.0 上游代码的衍生移植，按 `COPYING.GPL-2.0` 分发；
+`qrcodegen.py` 保留其文件头中的 MIT 许可与作者声明。

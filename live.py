@@ -11,7 +11,7 @@
     ``src/qrcodegen/``（ECC LOW），编码器为同族 Nayuki Python 实现，
     vendored 于 ``qrcodegen.py``（MIT，头部保留原作者声明）
     本文件作为上游 GPL-2.0 代码的衍生移植，受上游 GPL-2.0 条款约束，
-    与本仓库其余 MIT 代码不同（见仓库根 ``LICENSE``）。
+    与本仓库其余 MIT 代码不同（见 ``COPYING.GPL-2.0``）。
 
 覆盖插件 ``src/bilibili_api.cpp`` 的全部流程，方便转推脚本自动获取
 RTMP 地址与推流码，替代手填 BILIBILI_PUSH_URL / BILIBILI_PUSH_CODE：

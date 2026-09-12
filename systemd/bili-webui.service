@@ -5,15 +5,15 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/bili
+WorkingDirectory=@PROJECT_ROOT@
 EnvironmentFile=-%h/.config/bili/webui.env
-ExecStart=%h/bili/webui/app.py
+ExecStart=@PROJECT_ROOT@/webui/app.py
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths=%h/bili %h/.config/bili
+ReadWritePaths=@PROJECT_ROOT@ %h/.config/bili
 
 [Install]
 WantedBy=default.target

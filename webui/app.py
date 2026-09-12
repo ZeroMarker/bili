@@ -75,6 +75,7 @@ MANAGED_UNITS = {LIVE_UNIT, REPLAY_UNIT}
 LOGABLE_UNITS = {LIVE_UNIT, REPLAY_UNIT, WEBUI_UNIT}
 
 TARGET_RE = re.compile(r"[A-Za-z0-9_.]{1,64}")
+STREAM_SCHEMES = ("http://", "https://", "rtmp://", "rtmps://")
 SYSTEMCTL = ["systemctl", "--user"]
 
 
@@ -205,7 +206,7 @@ def probe_tiktok(target: str, timeout: int = 150) -> str:
         raise ValueError(f"@{target} 验流超时（已保持原推流不动）") from exc
     for line in (r.stdout or "").splitlines():
         line = line.strip()
-        if line.startswith("http"):
+        if line.lower().startswith(STREAM_SCHEMES):
             return line
     raise ValueError(f"@{target} 当前未开播或抓不到流（已保持原推流不动）")
 

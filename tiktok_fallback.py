@@ -27,6 +27,13 @@ FLV_QUALITY_KEYS: tuple[tuple[str, int | None], ...] = (
     ("SD2", 360),
 )
 
+STREAM_SCHEMES = ("http://", "https://", "rtmp://", "rtmps://")
+
+
+def is_stream_url(value: object) -> bool:
+    """Return whether *value* is a pull URL supported by ffmpeg."""
+    return isinstance(value, str) and value.lower().startswith(STREAM_SCHEMES)
+
 
 def pick_flv_url(flv: object, max_height: int | None = None) -> str | None:
     """从 FLV 拉流字典中按目标高度挑选 URL。
@@ -179,14 +186,14 @@ def check_live_via_webcast_api(
                 return url
             for key in ("rtmp_pull_url", "hls_pull_url", "liveUrl"):
                 url = stream_url.get(key)
-                if isinstance(url, str) and url.startswith("http"):
+                if is_stream_url(url):
                     return url
-        elif isinstance(stream_url, str) and stream_url.startswith("http"):
+        elif is_stream_url(stream_url):
             return stream_url
         # 直接挂在 data 上的 rtmp/hls
         for key in ("rtmp_pull_url", "hls_pull_url", "liveUrl"):
             url = room_info.get(key)
-            if isinstance(url, str) and url.startswith("http"):
+            if is_stream_url(url):
                 return url
     return None
 
