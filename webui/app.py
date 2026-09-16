@@ -13,6 +13,8 @@
 from __future__ import annotations
 
 import json
+from email import policy
+from email.parser import BytesParser
 import os
 import re
 import subprocess
@@ -352,6 +354,20 @@ def unit_logs(which: str, tail: int) -> str:
     return r.stdout[-100_000:]
 
 
+def _multipart_file(content_type: str, body: bytes) -> tuple[str, bytes]:
+    message = BytesParser(policy=policy.default).parsebytes(
+        b"Content-Type: " + content_type.encode("ascii", "replace") + b"\r\n\r\n" + body
+    )
+    if not message.is_multipart():
+        raise ValueError("封面上传请求格式错误")
+    for part in message.iter_parts():
+        disposition = part.get("Content-Disposition", "")
+        if part.get_param("name", header="Content-Disposition") == "file":
+            payload = part.get_payload(decode=True) or b""
+            return part.get_filename() or "cover.jpg", payload
+    raise ValueError("未找到封面文件")
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "BiliPushWebUI/1.0"
 
@@ -406,9 +422,27 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         try:
             length = int(self.headers.get("Content-Length", "0"))
-            if length < 0 or length > 16_384:
+            if length < 0 or length > 10 * 1024 * 1024 + 64 * 1024:
                 raise ValueError("请求过大")
-            data = json.loads(self.rfile.read(length) or b"{}")
+            raw = self.rfile.read(length)
+            if self.path == "/api/cover":
+                filename, content = _multipart_file(self.headers.get("Content-Type", ""), raw)
+                suffix = Path(filename).suffix.lower()
+                if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
+                    raise ValueError("封面仅支持 JPG、PNG 或 WEBP")
+                with tempfile.NamedTemporaryFile(suffix=suffix, delete=True) as image:
+                    image.write(content)
+                    image.flush()
+                    result = run(["python3", str(LIVE_PY), "cover", "--file", image.name],
+                                 timeout=90, check=False)
+                if result.returncode != 0:
+                    raise RuntimeError((result.stdout + result.stderr).strip()[-2000:] or "设置封面失败")
+                self.send_json(HTTPStatus.OK, {"ok": True, "output": result.stdout.strip()[-1000:]})
+                return
+            content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+            if content_type and content_type != "application/json":
+                raise ValueError("请求必须是 JSON")
+            data = json.loads(raw or b"{}")
             if not isinstance(data, dict):
                 raise ValueError("请求内容须为 JSON 对象")
             if self.path == "/api/mode":

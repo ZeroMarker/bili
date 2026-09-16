@@ -35,11 +35,13 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import mimetypes
 import os
 import sys
 import time
 import urllib.parse
 import urllib.request
+import uuid
 from http.client import HTTPResponse
 from pathlib import Path
 APP_KEY = "aae92bc66f3edfab"  # 来源：上游 src/bilibili_api.hpp（Bilibili 开放平台密钥，非本项目生成）
@@ -78,6 +80,7 @@ VERSION_URL = "https://api.live.bilibili.com/xlive/app-blink/v1/liveVersionInfo/
 START_LIVE_URL = "https://api.live.bilibili.com/room/v1/Room/startLive"
 STOP_LIVE_URL = "https://api.live.bilibili.com/room/v1/Room/stopLive"
 UPDATE_ROOM_URL = "https://api.live.bilibili.com/room/v1/Room/update"
+COVER_UPLOAD_URL = "https://member.bilibili.com/x/vu/web/cover/up"
 
 
 class BiliError(RuntimeError):
@@ -275,11 +278,51 @@ def stop_live(cookies: str, room_id: str, csrf: str) -> None:
         raise BiliError(f"停播失败：{payload.get('message')}")
 
 
-def update_room(cookies: str, room_id: str, csrf: str, title: str) -> None:
+def upload_cover(cookies: str, csrf: str, image: Path) -> str:
+    """Upload a room cover and return the hosted Bilibili image URL."""
+    if not image.is_file():
+        raise BiliError(f"封面文件不存在：{image}")
+    if image.suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp"}:
+        raise BiliError("封面仅支持 JPG、PNG 或 WEBP")
+    try:
+        content = image.read_bytes()
+    except OSError as exc:
+        raise BiliError(f"读取封面失败：{exc}") from exc
+    if not content:
+        raise BiliError("封面文件为空")
+    if len(content) > 10 * 1024 * 1024:
+        raise BiliError("封面文件不能超过 10 MB")
+    boundary = f"----bili-cover-{uuid.uuid4().hex}"
+    mime = mimetypes.guess_type(image.name)[0] or "application/octet-stream"
+    body = (
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"csrf\"\r\n\r\n{csrf}\r\n".encode()
+        + f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{image.name}\"\r\nContent-Type: {mime}\r\n\r\n".encode()
+        + content + f"\r\n--{boundary}--\r\n".encode()
+    )
+    headers = dict(DEFAULT_HEADERS)
+    headers.update({"Cookie": cookies, "Content-Type": f"multipart/form-data; boundary={boundary}",
+                    "Origin": "https://member.bilibili.com", "Referer": "https://member.bilibili.com/platform/home"})
+    req = urllib.request.Request(COVER_UPLOAD_URL, data=body, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:  # noqa: S310
+            payload = json.loads(resp.read().decode("utf-8", "replace"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise BiliError(f"上传封面失败：{exc}") from exc
+    if payload.get("code") != 0:
+        raise BiliError(f"上传封面失败：{payload.get('message', payload)}")
+    url = (payload.get("data") or {}).get("cover_url", "")
+    if not isinstance(url, str) or not url:
+        raise BiliError("上传成功但未返回封面地址")
+    return url
+
+
+def update_room(cookies: str, room_id: str, csrf: str, title: str, cover: str = "") -> None:
     form = (
         f"room_id={urllib.parse.quote(room_id)}&platform=pc_link"
         f"&title={urllib.parse.quote(title)}&csrf_token={csrf}&csrf={csrf}"
     )
+    if cover:
+        form += f"&cover={urllib.parse.quote(cover)}"
     payload, _ = _request(UPDATE_ROOM_URL, cookies=cookies, data=form)
     if payload.get("code") != 0:
         raise BiliError(f"更新直播间信息失败：{payload.get('message')}")
@@ -442,6 +485,14 @@ def cmd_update(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_cover(args: argparse.Namespace) -> int:
+    session, room_id, csrf = _require_authed(args)
+    cover = upload_cover(session["cookies"], csrf, args.file)
+    update_room(session["cookies"], room_id, csrf, session.get("title", ""), cover)
+    print(f"直播间封面已更新：{cover}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="live.py", description="Bilibili 开播工具（移植自 obs-bilibili-stream）")
     parser.add_argument("--session", type=Path, default=DEFAULT_SESSION, help="会话文件路径")
@@ -472,6 +523,9 @@ def build_parser() -> argparse.ArgumentParser:
     update = sub.add_parser("update", help="更新直播间标题")
     update.add_argument("--title", required=True, help="直播间标题")
     update.set_defaults(func=cmd_update)
+    cover = sub.add_parser("cover", help="上传并设置直播间封面")
+    cover.add_argument("--file", type=Path, required=True, help="JPG/PNG/WEBP 封面文件")
+    cover.set_defaults(func=cmd_cover)
     return parser
 
 

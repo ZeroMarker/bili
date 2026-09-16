@@ -224,6 +224,11 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid 
       <button class="btn-tonal" id="btnUpdate" onclick="goRoom('update')">改标题</button>
       <button class="btn-danger" id="btnStop" onclick="goRoom('stop')">停播（同时停推流）</button>
     </div>
+    <div class="row">
+      <div class="field"><label for="coverFile">直播间封面（JPG / PNG / WEBP，≤10MB）</label>
+        <input id="coverFile" type="file" accept="image/jpeg,image/png,image/webp"></div>
+      <button class="btn-tonal" id="btnCover" onclick="uploadCover()">上传并设置封面</button>
+    </div>
     <pre id="roomOut" hidden></pre>
   </div>
 
@@ -338,6 +343,21 @@ async function goRoom(action){
     out.hidden = false; out.textContent = r.output || 'OK';
     snack(action === 'start' ? '开播成功，推流已用新码重启' : 'OK');
     await load();
+  }catch(e){ showErr(e); }
+}
+async function uploadCover(){
+  try{
+    const file = document.getElementById('coverFile').files[0];
+    if(!file){ showErr(new Error('请选择封面图片')); return; }
+    if(file.size > 10 * 1024 * 1024){ showErr(new Error('封面文件不能超过 10 MB')); return; }
+    snack('正在上传并设置封面…');
+    const form = new FormData(); form.append('file', file);
+    const r = await fetch('/api/cover', {method:'POST', body:form});
+    const data = await r.json();
+    if(!r.ok) throw new Error(data.error || r.statusText);
+    document.getElementById('roomOut').hidden = false;
+    document.getElementById('roomOut').textContent = data.output || '封面已更新';
+    snack('直播间封面已更新');
   }catch(e){ showErr(e); }
 }
 async function stopAll(){ try{ await api('/api/stop', {}); snack('已停止全部推流，房间开播状态保持原样'); await load(); }catch(e){ showErr(e); } }
