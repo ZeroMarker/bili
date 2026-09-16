@@ -69,14 +69,16 @@ img,svg,video{max-width:100%}
 .topbar button{flex:none}
 .wrap{max-width:820px;width:min(100% - 32px,820px);margin:0 auto;padding:20px 0 64px;display:flex;flex-direction:column;gap:18px}
 .card{background:var(--surface-container-low);border-radius:var(--r-lg);padding:20px;
-  box-shadow:var(--shadow);border:1px solid transparent}
+  box-shadow:var(--shadow);border:1px solid color-mix(in srgb,var(--outline-variant) 45%,transparent);
+  transition:transform .18s ease,box-shadow .18s ease}
+.card:hover{transform:translateY(-1px);box-shadow:var(--shadow-2)}
 .card h2{margin:0 0 12px;font-size:15px;font-weight:700;color:var(--on-surface-variant);
-  text-transform:uppercase;letter-spacing:1.2px;display:flex;align-items:center;gap:8px}
+  letter-spacing:.3px;display:flex;align-items:center;gap:8px}
 .card h2 svg{flex:none}
 .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:10px 0}
 .row:last-child{margin-bottom:0}
 .mode-hero{display:flex;align-items:center;gap:14px;background:var(--surface-container);
-  border-radius:var(--r-md);padding:14px 16px}
+  border-radius:var(--r-md);padding:16px;border:1px solid var(--outline-variant)}
 .mode-dot{width:14px;height:14px;border-radius:50%;background:var(--outline);flex:none}
 .mode-dot.on{background:#2e7d32;box-shadow:0 0 0 6px color-mix(in srgb,#2e7d32 22%,transparent);animation:pulse 1.6s infinite}
 .mode-dot.warn{background:#b26a00;box-shadow:0 0 0 6px color-mix(in srgb,#b26a00 22%,transparent);animation:pulse 1.6s infinite}
@@ -111,6 +113,8 @@ button:disabled{opacity:.55;cursor:wait}
 .btn-outline{background:transparent;color:var(--primary);border:1.5px solid var(--outline)}
 .check{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--on-surface-variant)}
 .check input{width:18px;height:18px;accent-color:var(--primary)}
+.cover-preview{display:none;width:96px;height:64px;object-fit:cover;border-radius:12px;border:1px solid var(--outline-variant);background:var(--surface-container-high)}
+.cover-preview.show{display:block}
 pre{background:var(--surface-container-high);color:var(--on-surface);border-radius:var(--r-md);
   padding:14px 16px;overflow:auto;max-height:320px;font-size:12px;line-height:1.6;
   white-space:pre-wrap;margin:10px 0 0;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
@@ -226,7 +230,9 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid 
     </div>
     <div class="row">
       <div class="field"><label for="coverFile">直播间封面（JPG / PNG / WEBP，≤10MB）</label>
-        <input id="coverFile" type="file" accept="image/jpeg,image/png,image/webp"></div>
+        <input id="coverFile" type="file" accept="image/jpeg,image/png,image/webp">
+        <span class="mode-hint" id="coverHint">选择图片后会在这里预览</span></div>
+      <img id="coverPreview" class="cover-preview" alt="封面预览">
       <button class="btn-tonal" id="btnCover" onclick="uploadCover()">上传并设置封面</button>
     </div>
     <pre id="roomOut" hidden></pre>
@@ -256,7 +262,7 @@ function setBusy(on){
   busy += on ? 1 : -1;
   if(busy < 0) busy = 0;
   document.getElementById('bar').className = 'progress' + (busy ? ' show' : '');
-  for(const id of ['btnLive','btnReplay','btnStart','btnUpdate','btnStop','btnLogs','btnStopAll','btnRefresh','forceLive'])
+  for(const id of ['btnLive','btnReplay','btnStart','btnUpdate','btnStop','btnCover','btnLogs','btnStopAll','btnRefresh','forceLive'])
     document.getElementById(id).disabled = !!busy;
 }
 async function api(path, data, background = false){
@@ -337,7 +343,6 @@ async function goRoom(action){
     }else if(action === 'update'){
       data.title = document.getElementById('newTitle').value.trim();
     }
-    if(action === 'start') snack('开播中（换推流码并重启推流，大约需要半分钟）…');
     const r = await api('/api/room', data);
     const out = document.getElementById('roomOut');
     out.hidden = false; out.textContent = r.output || 'OK';
@@ -346,6 +351,7 @@ async function goRoom(action){
   }catch(e){ showErr(e); }
 }
 async function uploadCover(){
+  setBusy(true);
   try{
     const file = document.getElementById('coverFile').files[0];
     if(!file){ showErr(new Error('请选择封面图片')); return; }
@@ -359,6 +365,7 @@ async function uploadCover(){
     document.getElementById('roomOut').textContent = data.output || '封面已更新';
     snack('直播间封面已更新');
   }catch(e){ showErr(e); }
+  finally{ setBusy(false); }
 }
 async function stopAll(){ try{ await api('/api/stop', {}); snack('已停止全部推流，房间开播状态保持原样'); await load(); }catch(e){ showErr(e); } }
 async function logs(){
@@ -386,6 +393,12 @@ try{
   }
 }catch(e){ /* 忽略损坏的旧草稿 */ }
 for(const id of draftIds) document.getElementById(id).addEventListener('input', saveDraft);
+document.getElementById('coverFile').addEventListener('change', e => {
+  const file = e.target.files[0], preview = document.getElementById('coverPreview');
+  if(!file){ preview.classList.remove('show'); return; }
+  preview.src = URL.createObjectURL(file); preview.classList.add('show');
+  document.getElementById('coverHint').textContent = file.name;
+});
 for(const label of document.querySelectorAll('.field label')){
   const input = label.parentElement.querySelector('input,textarea');
   if(input) label.htmlFor = input.id;
