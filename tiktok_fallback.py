@@ -18,6 +18,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 # 各平台 FLV 拉流清晰度 key → 近似视频高度（ORIGIN 为源流，按 1080 处理）。
@@ -247,11 +248,13 @@ def _get_stream_url_with_browser(username: str, timeout: int = 35) -> str | None
         return None
     url = f"https://www.tiktok.com/@{username}/live"
     try:
-        result = subprocess.run(
-            [browser, "--headless=new", "--no-sandbox", "--disable-gpu",
-             "--disable-dev-shm-usage", "--virtual-time-budget=15000", "--dump-dom", url],
-            capture_output=True, text=True, timeout=timeout,
-        )
+        with tempfile.TemporaryDirectory(prefix="tiktok-chromium-") as profile:
+            result = subprocess.run(
+                [browser, "--headless=new", "--no-sandbox", "--disable-gpu",
+                 "--disable-dev-shm-usage", f"--user-data-dir={profile}",
+                 "--virtual-time-budget=15000", "--dump-dom", url],
+                capture_output=True, text=True, timeout=timeout,
+            )
     except (OSError, subprocess.TimeoutExpired) as exc:
         print(f"[tiktok_fallback] 浏览器兜底失败：{exc}", file=sys.stderr)
         return None
