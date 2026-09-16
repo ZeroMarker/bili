@@ -427,6 +427,7 @@ class Handler(BaseHTTPRequestHandler):
             raw = self.rfile.read(length)
             if self.path == "/api/cover":
                 filename, content = _multipart_file(self.headers.get("Content-Type", ""), raw)
+                print(f"cover upload received file={Path(filename).name!r} bytes={len(content)}", flush=True)
                 suffix = Path(filename).suffix.lower()
                 if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
                     raise ValueError("封面仅支持 JPG、PNG 或 WEBP")
@@ -436,7 +437,9 @@ class Handler(BaseHTTPRequestHandler):
                     result = run(["python3", str(LIVE_PY), "cover", "--file", image.name],
                                  timeout=90, check=False)
                 if result.returncode != 0:
+                    print(f"cover upload failed: {(result.stdout + result.stderr).strip()[-2000:]}", flush=True)
                     raise RuntimeError((result.stdout + result.stderr).strip()[-2000:] or "设置封面失败")
+                print(f"cover upload succeeded file={Path(filename).name!r}", flush=True)
                 self.send_json(HTTPStatus.OK, {"ok": True, "output": result.stdout.strip()[-1000:]})
                 return
             content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
@@ -457,6 +460,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(HTTPStatus.CONFLICT, {"error": str(exc)})
         except (ValueError, RuntimeError, json.JSONDecodeError,
                 OSError, subprocess.TimeoutExpired) as exc:
+            if self.path == "/api/cover":
+                print(f"cover upload request error: {exc}", flush=True)
             self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
 
     def log_message(self, fmt: str, *args: object) -> None:
