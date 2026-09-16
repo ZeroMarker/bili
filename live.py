@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import io
 import json
 import os
 import sys
@@ -43,6 +44,7 @@ import urllib.parse
 import urllib.request
 from http.client import HTTPResponse
 from pathlib import Path
+from urllib.error import HTTPError
 APP_KEY = "aae92bc66f3edfab"  # 来源：上游 src/bilibili_api.hpp（Bilibili 开放平台密钥，非本项目生成）
 APP_SECRET = "af125a0d5279fd576c1b4418a3e8276d"  # 同上
 
@@ -167,6 +169,9 @@ def _request(
             assert isinstance(resp, HTTPResponse)
             raw = resp.read().decode("utf-8", "replace")
             set_cookies = parse_set_cookies(resp.headers)
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")
+        raise BiliError(f"HTTP {exc.code}: {detail[-500:]}") from exc
     except OSError as exc:
         raise BiliError(f"网络错误：{exc}") from exc
     try:
@@ -292,7 +297,18 @@ def upload_cover(cookies: str, csrf: str, image: Path) -> str:
     if len(content) > 10 * 1024 * 1024:
         raise BiliError("封面文件不能超过 10 MB")
     suffix = image.suffix.lower()
-    mime = "image/jpeg" if suffix in {".jpg", ".jpeg"} else f"image/{suffix[1:]}"
+    if suffix == ".webp":
+        try:
+            from PIL import Image
+            with Image.open(io.BytesIO(content)) as source:
+                converted = io.BytesIO()
+                source.convert("RGB").save(converted, format="JPEG", quality=95)
+                content = converted.getvalue()
+        except ImportError as exc:
+            raise BiliError("上传 WEBP 需要 Pillow，请安装 python3-pil") from exc
+        except Exception as exc:  # noqa: BLE001
+            raise BiliError(f"转换 WEBP 封面失败：{exc}") from exc
+    mime = "image/jpeg" if suffix in {".jpg", ".jpeg", ".webp"} else "image/png"
     encoded = f"data:{mime};base64,{base64.b64encode(content).decode('ascii')}"
     body = urllib.parse.urlencode({"csrf": csrf, "cover": encoded})
     try:
