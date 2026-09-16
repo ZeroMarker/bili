@@ -41,6 +41,22 @@ class StreamProtocolTest(unittest.TestCase):
         with mock.patch.object(webui_app, "run", return_value=result):
             self.assertEqual(webui_app.probe_tiktok("demo"), "rtmp://example/live")
 
+    def test_rendered_sigi_extracts_video_flv_before_audio(self):
+        sigi = {
+            "LiveRoom": {"liveRoomUserInfo": {"liveRoom": {
+                "streamData": {"pull_data": {"streams": [
+                    {"url": "https://cdn.example/audio.flv?only_audio=1"},
+                    {"url": "https://cdn.example/video.flv"},
+                    {"url": "https://cdn.example/video.m3u8"},
+                ]}
+            }}}}
+        }
+        html = '<script id="SIGI_STATE">' + __import__("json").dumps(sigi) + "</script>"
+        self.assertEqual(
+            tiktok_fallback._stream_url_from_sigi(html),
+            "https://cdn.example/video.flv",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
