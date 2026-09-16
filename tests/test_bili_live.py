@@ -5,7 +5,9 @@
 
 import hashlib
 import sys
+import tempfile
 import unittest
+import urllib.parse
 from pathlib import Path
 from unittest import mock
 
@@ -118,6 +120,26 @@ class StartLiveTest(unittest.TestCase):
             bili_live.start_live("ck", "123", "csrf", 646)
         self.assertNotIn("build=", seen["form"])
         self.assertIn("area_v2=646", seen["form"])
+
+
+class CoverUploadTest(unittest.TestCase):
+    def test_upload_uses_base64_form_and_accepts_url_response(self):
+        with tempfile.NamedTemporaryFile(suffix=".png") as image:
+            image.write(b"png-data")
+            image.flush()
+            seen = {}
+
+            def fake_request(url, *, cookies="", data=None, timeout=15):
+                seen["url"], seen["form"] = url, data
+                return ({"code": 0, "data": {"url": "https://img.example/cover.jpg"}}, "")
+
+            with mock.patch.object(bili_live, "_request", side_effect=fake_request):
+                result = bili_live.upload_cover("ck", "csrf", Path(image.name))
+        self.assertEqual(result, "https://img.example/cover.jpg")
+        self.assertEqual(seen["url"], bili_live.COVER_UPLOAD_URL)
+        fields = dict(urllib.parse.parse_qsl(seen["form"]))
+        self.assertEqual(fields["csrf"], "csrf")
+        self.assertTrue(fields["cover"].startswith("data:image/png;base64,"))
 
 
 class QrRenderTest(unittest.TestCase):

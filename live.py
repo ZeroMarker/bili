@@ -33,18 +33,16 @@ RTMP 地址与推流码，替代手填 BILIBILI_PUSH_URL / BILIBILI_PUSH_CODE：
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
-import mimetypes
 import os
 import sys
 import time
 import urllib.parse
 import urllib.request
-import uuid
 from http.client import HTTPResponse
 from pathlib import Path
-from urllib.error import HTTPError
 APP_KEY = "aae92bc66f3edfab"  # 来源：上游 src/bilibili_api.hpp（Bilibili 开放平台密钥，非本项目生成）
 APP_SECRET = "af125a0d5279fd576c1b4418a3e8276d"  # 同上
 
@@ -293,29 +291,18 @@ def upload_cover(cookies: str, csrf: str, image: Path) -> str:
         raise BiliError("封面文件为空")
     if len(content) > 10 * 1024 * 1024:
         raise BiliError("封面文件不能超过 10 MB")
-    boundary = f"----bili-cover-{uuid.uuid4().hex}"
-    mime = mimetypes.guess_type(image.name)[0] or "application/octet-stream"
-    body = (
-        (f"--{boundary}\r\nContent-Disposition: form-data; name=\"csrf\"\r\n\r\n{csrf}\r\n"
-         f"--{boundary}\r\nContent-Disposition: form-data; name=\"csrf_token\"\r\n\r\n{csrf}\r\n").encode()
-        + f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{image.name}\"\r\nContent-Type: {mime}\r\n\r\n".encode()
-        + content + f"\r\n--{boundary}--\r\n".encode()
-    )
-    headers = dict(DEFAULT_HEADERS)
-    headers.update({"Cookie": cookies, "Content-Type": f"multipart/form-data; boundary={boundary}",
-                    "Origin": "https://member.bilibili.com", "Referer": "https://member.bilibili.com/platform/home"})
-    req = urllib.request.Request(COVER_UPLOAD_URL, data=body, headers=headers, method="POST")
+    suffix = image.suffix.lower()
+    mime = "image/jpeg" if suffix in {".jpg", ".jpeg"} else f"image/{suffix[1:]}"
+    encoded = f"data:{mime};base64,{base64.b64encode(content).decode('ascii')}"
+    body = urllib.parse.urlencode({"csrf": csrf, "cover": encoded})
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:  # noqa: S310
-            payload = json.loads(resp.read().decode("utf-8", "replace"))
-    except HTTPError as exc:
-        detail = exc.read().decode("utf-8", "replace")
-        raise BiliError(f"上传封面失败：HTTP {exc.code} {detail[-500:]}") from exc
-    except (OSError, json.JSONDecodeError) as exc:
+        payload, _ = _request(COVER_UPLOAD_URL, cookies=cookies, data=body)
+    except BiliError as exc:
         raise BiliError(f"上传封面失败：{exc}") from exc
     if payload.get("code") != 0:
         raise BiliError(f"上传封面失败：{payload.get('message', payload)}")
-    url = (payload.get("data") or {}).get("cover_url", "")
+    data = payload.get("data") or {}
+    url = data.get("url") or data.get("cover_url")
     if not isinstance(url, str) or not url:
         raise BiliError("上传成功但未返回封面地址")
     return url
