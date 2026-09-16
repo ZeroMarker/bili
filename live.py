@@ -44,6 +44,7 @@ import urllib.request
 import uuid
 from http.client import HTTPResponse
 from pathlib import Path
+from urllib.error import HTTPError
 APP_KEY = "aae92bc66f3edfab"  # 来源：上游 src/bilibili_api.hpp（Bilibili 开放平台密钥，非本项目生成）
 APP_SECRET = "af125a0d5279fd576c1b4418a3e8276d"  # 同上
 
@@ -295,7 +296,8 @@ def upload_cover(cookies: str, csrf: str, image: Path) -> str:
     boundary = f"----bili-cover-{uuid.uuid4().hex}"
     mime = mimetypes.guess_type(image.name)[0] or "application/octet-stream"
     body = (
-        f"--{boundary}\r\nContent-Disposition: form-data; name=\"csrf\"\r\n\r\n{csrf}\r\n".encode()
+        (f"--{boundary}\r\nContent-Disposition: form-data; name=\"csrf\"\r\n\r\n{csrf}\r\n"
+         f"--{boundary}\r\nContent-Disposition: form-data; name=\"csrf_token\"\r\n\r\n{csrf}\r\n").encode()
         + f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{image.name}\"\r\nContent-Type: {mime}\r\n\r\n".encode()
         + content + f"\r\n--{boundary}--\r\n".encode()
     )
@@ -306,6 +308,9 @@ def upload_cover(cookies: str, csrf: str, image: Path) -> str:
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:  # noqa: S310
             payload = json.loads(resp.read().decode("utf-8", "replace"))
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")
+        raise BiliError(f"上传封面失败：HTTP {exc.code} {detail[-500:]}") from exc
     except (OSError, json.JSONDecodeError) as exc:
         raise BiliError(f"上传封面失败：{exc}") from exc
     if payload.get("code") != 0:
