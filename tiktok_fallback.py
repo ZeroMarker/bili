@@ -14,12 +14,15 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import signal
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
 
 # 各平台 FLV 拉流清晰度 key → 近似视频高度（ORIGIN 为源流，按 1080 处理）。
 FLV_QUALITY_KEYS: tuple[tuple[str, int | None], ...] = (
@@ -237,6 +240,116 @@ def _stream_url_from_sigi(text: str) -> str | None:
     return next((url for url in urls if ".flv" in url), None) or (urls[0] if urls else None)
 
 
+def _wait_for_process_group_exit(pgid: int, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+
+
+def _terminate_process_group(proc: subprocess.Popen, grace: float = 5) -> None:
+    """Terminate and reap Chromium and every process in its session."""
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        proc.communicate(timeout=grace)
+    except subprocess.TimeoutExpired:
+        pass
+    if _wait_for_process_group_exit(proc.pid, grace):
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    try:
+        proc.communicate(timeout=grace)
+    except subprocess.TimeoutExpired:
+        pass
+    if not _wait_for_process_group_exit(proc.pid, grace):
+        raise subprocess.TimeoutExpired(proc.args, grace)
+
+
+def _active_chromium_profiles() -> set[str]:
+    profiles: set[str] = set()
+    for cmdline in Path("/proc").glob("[0-9]*/cmdline"):
+        try:
+            args = cmdline.read_bytes().split(b"\0")
+        except OSError:
+            continue
+        for arg in args:
+            if arg.startswith(b"--user-data-dir="):
+                profiles.add(os.fsdecode(arg.partition(b"=")[2]))
+    return profiles
+
+
+def _remove_stale_chromium_profiles(
+    profile_parent: Path, *, max_age: float = 600
+) -> None:
+    """Remove abandoned Bili probe profiles, preserving live/recent probes."""
+    active = _active_chromium_profiles()
+    cutoff = time.time() - max_age
+    for profile in profile_parent.glob("bili-tiktok-chromium-*"):
+        try:
+            if profile.stat().st_mtime > cutoff or str(profile) in active:
+                continue
+        except OSError:
+            continue
+        shutil.rmtree(profile, ignore_errors=True)
+
+
+def _chromium_profile_parent(browser: str) -> str | None:
+    browser_path = Path(browser)
+    if browser_path.parts[:3] != ("/", "snap", "bin"):
+        return None
+    profile_parent = (
+        Path.home() / "snap" / browser_path.name / "common" / "chromium-headless"
+    )
+    profile_parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _remove_stale_chromium_profiles(profile_parent)
+    return str(profile_parent)
+
+
+def _install_termination_handlers(
+    proc: subprocess.Popen,
+) -> dict[signal.Signals, object]:
+    """Forward service stop signals to Chromium before terminating Python."""
+    previous: dict[signal.Signals, object] = {}
+
+    def handle(signum: int, _frame) -> None:
+        # Do not call communicate() recursively from a signal handler while
+        # the outer communicate() is active. Stop the disposable browser
+        # immediately; the surrounding finally block reaps it and cleans the
+        # profile after this SystemExit unwinds the interrupted wait.
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        raise SystemExit(128 + signum)
+
+    try:
+        for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGQUIT):
+            previous[signum] = signal.getsignal(signum)
+            signal.signal(signum, handle)
+    except ValueError:
+        # signal.signal() is only available on the main thread. Current CLI
+        # callers use the main thread; library callers still retain finally
+        # cleanup and the stale-profile safety net.
+        return {}
+    return previous
+
+
+def _restore_signal_handlers(previous: dict[signal.Signals, object]) -> None:
+    for signum, handler in previous.items():
+        signal.signal(signum, handler)
+
+
 def _get_stream_url_with_browser(username: str, timeout: int = 35) -> str | None:
     """Resolve SlardarWAF pages using the installed headless Chromium, if any."""
     browser = next(
@@ -248,17 +361,29 @@ def _get_stream_url_with_browser(username: str, timeout: int = 35) -> str | None
         return None
     url = f"https://www.tiktok.com/@{username}/live"
     try:
-        with tempfile.TemporaryDirectory(prefix="tiktok-chromium-") as profile:
-            result = subprocess.run(
+        profile_parent = _chromium_profile_parent(browser)
+        with tempfile.TemporaryDirectory(
+            prefix="bili-tiktok-chromium-", dir=profile_parent
+        ) as profile:
+            proc = subprocess.Popen(
                 [browser, "--headless=new", "--no-sandbox", "--disable-gpu",
                  "--disable-dev-shm-usage", f"--user-data-dir={profile}",
                  "--virtual-time-budget=15000", "--dump-dom", url],
-                capture_output=True, text=True, timeout=timeout,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
             )
+            previous_handlers = _install_termination_handlers(proc)
+            try:
+                stdout, _ = proc.communicate(timeout=timeout)
+            finally:
+                _restore_signal_handlers(previous_handlers)
+                _terminate_process_group(proc)
     except (OSError, subprocess.TimeoutExpired) as exc:
         print(f"[tiktok_fallback] 浏览器兜底失败：{exc}", file=sys.stderr)
         return None
-    stream_url = _stream_url_from_sigi(result.stdout or "")
+    stream_url = _stream_url_from_sigi(stdout or "")
     if stream_url:
         print("[tiktok_fallback] 浏览器渲染通过 WAF，已从页面取得 FLV", file=sys.stderr)
     return stream_url
