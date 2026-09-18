@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="description" content="TikTok 转播 · 文件轮播 · B 站房间管理">
-<meta name="theme-color" media="(prefers-color-scheme: light)" content="#6750a4">
-<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#211f26">
+<meta name="theme-color" media="(prefers-color-scheme: light)" content="#f7f8fc">
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#111318">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -157,6 +157,57 @@ pre{background:var(--surface-container-high);color:var(--on-surface);border-radi
 .notice.error{background:var(--error-container);color:var(--error)}
 button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid var(--primary);outline-offset:3px}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+
+/* 2026 visual refresh: clearer hierarchy for an operations console. */
+:root{
+  --primary:#4f46e5;--on-primary:#fff;--primary-container:#e9e7ff;--on-primary-container:#27216f;
+  --secondary-container:#eef0f8;--on-secondary-container:#343746;
+  --success:#17834f;--success-container:#e1f6e9;--on-success-container:#116039;
+  --surface:#f7f8fc;--surface-container-low:#fff;--surface-container:#f2f3f8;
+  --surface-container-high:#eceef5;--surface-container-highest:#e3e6ef;
+  --on-surface:#171923;--on-surface-variant:#636779;--outline:#777b8d;--outline-variant:#dfe1e9;
+  --error:#c2353c;--error-container:#ffeaeb;
+  --shadow:0 1px 2px rgba(26,29,43,.05),0 8px 28px rgba(26,29,43,.06);
+  --shadow-2:0 2px 4px rgba(26,29,43,.06),0 16px 40px rgba(26,29,43,.1);
+  --r-lg:22px;--r-md:16px;--r-sm:14px;--r-xs:10px
+}
+@media(prefers-color-scheme:dark){:root{
+  --primary:#b8b3ff;--on-primary:#211a83;--primary-container:#302b75;--on-primary-container:#e8e6ff;
+  --secondary-container:#282b34;--on-secondary-container:#e1e3ec;
+  --success:#56d694;--success-container:#173d2b;--on-success-container:#8aebb5;
+  --surface:#111318;--surface-container-low:#181a20;--surface-container:#1d2027;
+  --surface-container-high:#262932;--surface-container-highest:#30343e;
+  --on-surface:#eef0f7;--on-surface-variant:#aeb2c0;--outline:#858999;--outline-variant:#343741;
+  --error:#ffb3b7;--error-container:#50151a;--shadow:0 1px 2px rgba(0,0,0,.22),0 12px 32px rgba(0,0,0,.18)
+}}
+body{background:var(--surface)}
+body::before{content:"";position:fixed;inset:0 0 auto;height:360px;pointer-events:none;z-index:-1;
+  background:radial-gradient(circle at 15% 0,color-mix(in srgb,var(--primary) 12%,transparent),transparent 48%),radial-gradient(circle at 90% 5%,color-mix(in srgb,#45b7a3 9%,transparent),transparent 38%)}
+.topbar{padding:12px max(20px,env(safe-area-inset-right)) 12px max(20px,env(safe-area-inset-left))}
+.topbar .logo{border-radius:12px;background:linear-gradient(145deg,var(--primary),#7c72ff)}
+.online{display:flex;align-items:center;gap:7px;font-size:12px;font-weight:700;color:var(--on-surface-variant);padding:7px 11px;border:1px solid var(--outline-variant);border-radius:999px;background:var(--surface-container-low)}
+.online::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--success);box-shadow:0 0 0 3px color-mix(in srgb,var(--success) 15%,transparent)}
+.online.offline{color:var(--error)}.online.offline::before{background:var(--error);box-shadow:none}
+.wrap{max-width:1180px;width:min(100% - 40px,1180px);padding-top:28px;gap:16px}
+.card{border:1px solid var(--outline-variant);box-shadow:var(--shadow)}
+.card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:14px}
+.card-head h2{font-size:17px;color:var(--on-surface);margin:0 0 4px}
+.card-kicker{font-size:12px;color:var(--on-surface-variant);line-height:1.5}
+.mode-hero{padding:20px;background:linear-gradient(135deg,var(--primary-container),var(--surface-container));border-color:color-mix(in srgb,var(--primary) 24%,var(--outline-variant))}
+.svc{background:var(--surface-container);border:1px solid var(--outline-variant);padding:14px}
+.pill{padding:3px 9px;font-size:11px}
+.pill.live{background:var(--success-container);color:var(--on-success-container)}
+.field input,.field textarea,.field select{background:var(--surface-container);border:1px solid var(--outline-variant);border-radius:var(--r-xs);padding:12px 13px;transition:border-color .15s,box-shadow .15s}
+.field input:focus,.field textarea:focus{border-color:var(--primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--primary) 14%,transparent);background:var(--surface-container-low)}
+button{border-radius:11px;padding-left:18px;padding-right:18px}
+.notice{padding:12px 16px;border-radius:13px;font-size:13px;border:1px solid var(--outline-variant)}
+@media(min-width:1000px){
+  .wrap{display:grid;grid-template-columns:repeat(12,1fr);align-items:start}
+  .wrap>.progress,.wrap>.notice,.room-card,.logs-card,.wrap>.foot{grid-column:1/-1}
+  .wrap>.card.status-card{grid-column:1/span 5;grid-row:span 2;position:sticky;top:92px}
+  .wrap>.live-card,.wrap>.replay-card{grid-column:6/-1}
+}
+@media(max-width:640px){.online{display:none}.wrap{width:min(100% - 24px,1180px)}.card-head{display:block}.card-head .pill{margin-top:8px}}
 </style>
 </head>
 <body>
@@ -166,6 +217,7 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid 
   </div>
   <div><h1>Bili 推流管理</h1><div class="sub">TikTok 转播 · 文件轮播 · B 站房间</div></div>
   <div class="spacer"></div>
+  <div class="online" id="connectionState">控制台在线</div>
   <button class="btn-tonal" onclick="load()" id="btnRefresh" title="刷新状态">
     <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M17.65 6.35A8 8 0 1 0 19.73 14h-2.08a6 6 0 1 1-1.41-6.24L13 11h7V4l-2.35 2.35z"/></svg>
     刷新</button>
@@ -175,8 +227,8 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid 
   <div class="progress" id="bar" aria-hidden="true"><i></i></div>
   <div id="operation" class="notice" role="status" aria-live="polite">选择直播推流或文件轮播。切换前会验证输入并停止另一种模式。</div>
 
-  <div class="card">
-    <h2><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm-2 14.5v-9l7.5 4.5-7.5 4.5z"/></svg>当前状态</h2>
+  <div class="card status-card">
+    <div class="card-head"><div><h2><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm-2 14.5v-9l7.5 4.5-7.5 4.5z"/></svg>运行概览</h2><div class="card-kicker">推流服务与直播间的实时状态</div></div></div>
     <div class="mode-hero">
       <span class="mode-dot" id="modeDot"></span>
       <div><div class="mode-name" id="mode">…</div><div class="mode-hint" id="refreshState" aria-live="polite">正在连接…</div></div>
@@ -190,8 +242,8 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid 
     <pre id="room">房间状态加载中…</pre>
   </div>
 
-  <div class="card">
-    <h2><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M9.75 15.02 15.5 12l-5.75-3.02v6.04zM18 3H6a3 3 0 0 0-3 3v12a3 3 0 0 0 3 3h12a3 3 0 0 0 3-3V6a3 3 0 0 0-3-3zm1 15a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v12z"/></svg>直播推流</h2>
+  <div class="card live-card">
+    <div class="card-head"><div><h2><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M9.75 15.02 15.5 12l-5.75-3.02v6.04zM18 3H6a3 3 0 0 0-3 3v12a3 3 0 0 0 3 3h12a3 3 0 0 0 3-3V6a3 3 0 0 0-3-3zm1 15a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v12z"/></svg>直播推流</h2><div class="card-kicker">将 TikTok 直播源转推至当前 B 站房间</div></div><span class="pill">LIVE</span></div>
     <div class="row">
       <div class="field"><label>TikTok 用户名</label>
         <input id="target" type="text" placeholder="如 ayakiguchi1"></div>
@@ -203,8 +255,8 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid 
     <div class="mode-hint">先验流再切换：目标没在播会拒绝，保持原推流不动。勾选上项则跳过验流直接切换，服务空等复播自动转推。</div>
   </div>
 
-  <div class="card">
-    <h2><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M4 6h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1zm1 2v8h14V8H5zm3 2v4l3.5-2L8 10z"/></svg>文件轮播</h2>
+  <div class="card replay-card">
+    <div class="card-head"><div><h2><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M4 6h16a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1zm1 2v8h14V8H5zm3 2v4l3.5-2L8 10z"/></svg>文件轮播</h2><div class="card-kicker">循环播放本地 MP4 文件或目录</div></div><span class="pill">REPLAY</span></div>
     <div class="row"><div class="field"><label>绝对路径，每行一个文件或目录（目录取其中 *.mp4）</label>
       <textarea id="paths" rows="3"></textarea></div></div>
     <div class="row">
@@ -214,8 +266,8 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid 
     <div class="mode-hint">房间关播时自动用上次分区/标题开播；无开播记录时需先去房间卡开播。</div>
   </div>
 
-  <div class="card">
-    <h2><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3 2 8.5V9h20v-.5L12 3zM5 10v8H3v3h18v-3h-2v-8h-3v8h-3v-8h-3v8H7v-8H5z"/></svg>房间</h2>
+  <div class="card room-card">
+    <div class="card-head"><div><h2><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3 2 8.5V9h20v-.5L12 3zM5 10v8H3v3h18v-3h-2v-8h-3v8h-3v-8h-3v8H7v-8H5z"/></svg>直播间设置</h2><div class="card-kicker">管理开播状态、标题、分区与封面</div></div></div>
     <div class="row">
       <div class="field" style="max-width:190px"><label>子分区 ID</label>
         <input id="area" type="number" min="1" step="1" placeholder="live.py areas 查"></div>
@@ -238,8 +290,8 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid 
     <pre id="roomOut" hidden></pre>
   </div>
 
-  <div class="card">
-    <h2><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M4 5h16a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H8l-5 4V6a1 1 0 0 1 1-1zm2 3v2h12V8H6zm0 4v2h8v-2H6z"/></svg>日志</h2>
+  <div class="card logs-card">
+    <div class="card-head"><div><h2><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M4 5h16a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H8l-5 4V6a1 1 0 0 1 1-1zm2 3v2h12V8H6zm0 4v2h8v-2H6z"/></svg>服务日志</h2><div class="card-kicker">查看最近运行记录或停止全部推流</div></div></div>
     <div class="row">
       <select id="which" class="field-sel">
         <option value="live">直播推流</option><option value="replay">文件轮播</option><option value="webui">webui</option>
@@ -296,6 +348,8 @@ async function load(background = false){
   loading = true;
   try{
     const s = await api('/api/status', undefined, background);
+    const connection = document.getElementById('connectionState');
+    connection.textContent = '控制台在线'; connection.classList.remove('offline');
     document.getElementById('refreshState').textContent = '更新于 ' + new Date().toLocaleTimeString() + ' · 每 10 秒刷新';
     if(!document.getElementById('target').value && s.live.target) document.getElementById('target').value = s.live.target;
     const names = {live:'直播推流', replay:'文件轮播', idle:'空闲', conflict:'冲突！双推流'};
@@ -309,6 +363,8 @@ async function load(background = false){
     pill('replayPill', s.replay.pushing ? '推流中' : s.replay.active === 'active' ? '待命' : '停止', s.replay.pushing ? 'live' : s.replay.active === 'active' ? '' : 'bad');
     document.getElementById('room').textContent = s.room.text || '(房间状态未知)';
   }catch(e){
+    const connection = document.getElementById('connectionState');
+    connection.textContent = '连接异常'; connection.classList.add('offline');
     document.getElementById('refreshState').textContent = '刷新失败 · 当前显示为上次结果';
     if(!background) showErr(e);
   }finally{ loading = false; }

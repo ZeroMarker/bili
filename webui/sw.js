@@ -1,6 +1,6 @@
 /* Bili 推流管理 Service Worker — 标准库后端，无构建步骤。
  * 策略：App Shell 缓存优先可离线；/api/* 永远走网络；导航请求网络优先、失败回退缓存。 */
-const CACHE = "bili-push-v2";
+const CACHE = "bili-push-v3";
 const SHELL = [
   "/",
   "/index.html",
