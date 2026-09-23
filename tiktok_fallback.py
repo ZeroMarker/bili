@@ -4,11 +4,17 @@
 来源：~/tiktok/scripts/dlr/adapters/tiktok_extract.py（+ base.py 的清晰度表），
 逻辑逐行对齐：curl_cffi 直解 /live 页面 → SIGI_STATE / Universal Data /
 全文 roomId → webcast API 拿流（FLV 优先，rtmp/HLS 兜底）。
-与上游的唯一差异：去掉了其内部的 yt-dlp 重试步骤——调用方 get_stream.py
-已经跑过 4 种 yt-dlp 变体（含 Cookie），是其超集。
+与上游的差异：
+  1) 去掉了其内部的 yt-dlp 重试步骤——调用方 get_stream.py 已经跑过 4 种
+     yt-dlp 变体（含 Cookie），是其超集；
+  2) 浏览器渲染改走共享服务 browserd（tiktok 仓库 scripts/dlr/browserd.py，
+     http://127.0.0.1:9555，TIKTOK_BROWSERD_URL 可覆盖），不再每轮冷启动
+     一个 snap Chromium；服务不可用时跳过浏览器兜底；
+  3) SIGI 抽取加 status==2 门禁：离线页残留的陈旧 streamData（永远 404）
+     一律拒绝，不把死地址交给推流循环。
 
 依赖：curl_cffi（pip 包，非文件；缺失时 get_stream_url 返回 None）。
-标准库 only，其余无依赖。
+标准库 only，其余无外部文件依赖。
 """
 
 from __future__ import annotations
@@ -16,13 +22,10 @@ from __future__ import annotations
 import json
 import os
 import re
-import signal
-import shutil
-import subprocess
 import sys
-import tempfile
 import time
-from pathlib import Path
+import urllib.error
+import urllib.request
 
 # 各平台 FLV 拉流清晰度 key → 近似视频高度（ORIGIN 为源流，按 1080 处理）。
 FLV_QUALITY_KEYS: tuple[tuple[str, int | None], ...] = (
@@ -234,156 +237,76 @@ def _stream_url_from_sigi(text: str) -> str | None:
                 pass
 
     live_room = data.get("LiveRoom", {}).get("liveRoomUserInfo", {}).get("liveRoom", {})
+    # 陈旧流数据防护：离线页仍会携带上次直播的 streamData（其中 FLV 永远 404）。
+    # status 明确非 2（如离线 4）时拒绝抽取，避免把陈旧地址交给推流循环。
+    status = live_room.get("status")
+    if status is not None and status != 2:
+        return None
     walk(live_room.get("streamData", {}))
     walk(live_room.get("hevcStreamData", {}))
     # FLV is more stable for long-running relay than HLS.
     return next((url for url in urls if ".flv" in url), None) or (urls[0] if urls else None)
 
 
-def _wait_for_process_group_exit(pgid: int, timeout: float) -> bool:
-    deadline = time.monotonic() + timeout
-    while True:
-        try:
-            os.killpg(pgid, 0)
-        except ProcessLookupError:
-            return True
-        if time.monotonic() >= deadline:
-            return False
-        time.sleep(0.05)
 
 
-def _terminate_process_group(proc: subprocess.Popen, grace: float = 5) -> None:
-    """Terminate and reap Chromium and every process in its session."""
-    try:
-        os.killpg(proc.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
-    try:
-        proc.communicate(timeout=grace)
-    except subprocess.TimeoutExpired:
-        pass
-    if _wait_for_process_group_exit(proc.pid, grace):
-        return
-    try:
-        os.killpg(proc.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    try:
-        proc.communicate(timeout=grace)
-    except subprocess.TimeoutExpired:
-        pass
-    if not _wait_for_process_group_exit(proc.pid, grace):
-        raise subprocess.TimeoutExpired(proc.args, grace)
 
 
-def _active_chromium_profiles() -> set[str]:
-    profiles: set[str] = set()
-    for cmdline in Path("/proc").glob("[0-9]*/cmdline"):
-        try:
-            args = cmdline.read_bytes().split(b"\0")
-        except OSError:
-            continue
-        for arg in args:
-            if arg.startswith(b"--user-data-dir="):
-                profiles.add(os.fsdecode(arg.partition(b"=")[2]))
-    return profiles
 
 
-def _remove_stale_chromium_profiles(
-    profile_parent: Path, *, max_age: float = 600
-) -> None:
-    """Remove abandoned Bili probe profiles, preserving live/recent probes."""
-    active = _active_chromium_profiles()
-    cutoff = time.time() - max_age
-    for profile in profile_parent.glob("bili-tiktok-chromium-*"):
-        try:
-            if profile.stat().st_mtime > cutoff or str(profile) in active:
-                continue
-        except OSError:
-            continue
-        shutil.rmtree(profile, ignore_errors=True)
 
 
-def _chromium_profile_parent(browser: str) -> str | None:
-    browser_path = Path(browser)
-    if browser_path.parts[:3] != ("/", "snap", "bin"):
-        return None
-    profile_parent = (
-        Path.home() / "snap" / browser_path.name / "common" / "chromium-headless"
+
+
+
+
+
+
+
+
+
+
+
+
+
+def _get_stream_url_with_browser(username: str, timeout: int = 25) -> str | None:
+    """经共享渲染服务（tiktok 仓库 scripts/dlr/browserd.py）渲染直播页并抽取 FLV。
+
+    服务不可用/超时返回 None：放弃浏览器兜底，其余检测路径不受影响。
+    端点默认 http://127.0.0.1:9555，TIKTOK_BROWSERD_URL 可覆盖（协议同 browserd）。
+    """
+    wait_js = """(() => {
+  const s = document.querySelector('script#SIGI_STATE');
+  if (!s) return false;
+  try {
+    const room = ((JSON.parse(s.textContent).LiveRoom || {}).liveRoomUserInfo || {}).liveRoom || {};
+    const st = room.status;
+    if (st === 2) return Boolean(room.streamData || room.hevcStreamData);
+    return typeof st === 'number' && st !== 0;
+  } catch (e) { return false; }
+})()"""
+    endpoint = os.environ.get(
+        "TIKTOK_BROWSERD_URL", "http://127.0.0.1:9555"
+    ).rstrip("/")
+    payload = json.dumps(
+        {
+            "url": f"https://www.tiktok.com/@{username}/live",
+            "timeout": timeout,
+            "wait_js": wait_js,
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        endpoint + "/render",
+        data=payload,
+        headers={"Content-Type": "application/json"},
     )
-    profile_parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    _remove_stale_chromium_profiles(profile_parent)
-    return str(profile_parent)
-
-
-def _install_termination_handlers(
-    proc: subprocess.Popen,
-) -> dict[signal.Signals, object]:
-    """Forward service stop signals to Chromium before terminating Python."""
-    previous: dict[signal.Signals, object] = {}
-
-    def handle(signum: int, _frame) -> None:
-        # Do not call communicate() recursively from a signal handler while
-        # the outer communicate() is active. Stop the disposable browser
-        # immediately; the surrounding finally block reaps it and cleans the
-        # profile after this SystemExit unwinds the interrupted wait.
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        raise SystemExit(128 + signum)
-
     try:
-        for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGQUIT):
-            previous[signum] = signal.getsignal(signum)
-            signal.signal(signum, handle)
-    except ValueError:
-        # signal.signal() is only available on the main thread. Current CLI
-        # callers use the main thread; library callers still retain finally
-        # cleanup and the stale-profile safety net.
-        return {}
-    return previous
-
-
-def _restore_signal_handlers(previous: dict[signal.Signals, object]) -> None:
-    for signum, handler in previous.items():
-        signal.signal(signum, handler)
-
-
-def _get_stream_url_with_browser(username: str, timeout: int = 35) -> str | None:
-    """Resolve SlardarWAF pages using the installed headless Chromium, if any."""
-    browser = next(
-        (shutil.which(name) for name in ("chromium", "chromium-browser", "google-chrome")
-         if shutil.which(name)),
-        None,
-    )
-    if not browser:
+        with urllib.request.urlopen(request, timeout=timeout + 10) as response:
+            html = response.read().decode("utf-8", "replace")
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        print(f"[tiktok_fallback] 浏览器渲染服务不可用：{exc}", file=sys.stderr)
         return None
-    url = f"https://www.tiktok.com/@{username}/live"
-    try:
-        profile_parent = _chromium_profile_parent(browser)
-        with tempfile.TemporaryDirectory(
-            prefix="bili-tiktok-chromium-", dir=profile_parent
-        ) as profile:
-            proc = subprocess.Popen(
-                [browser, "--headless=new", "--no-sandbox", "--disable-gpu",
-                 "--disable-dev-shm-usage", f"--user-data-dir={profile}",
-                 "--virtual-time-budget=15000", "--dump-dom", url],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                start_new_session=True,
-            )
-            previous_handlers = _install_termination_handlers(proc)
-            try:
-                stdout, _ = proc.communicate(timeout=timeout)
-            finally:
-                _restore_signal_handlers(previous_handlers)
-                _terminate_process_group(proc)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        print(f"[tiktok_fallback] 浏览器兜底失败：{exc}", file=sys.stderr)
-        return None
-    stream_url = _stream_url_from_sigi(stdout or "")
+    stream_url = _stream_url_from_sigi(html)
     if stream_url:
         print("[tiktok_fallback] 浏览器渲染通过 WAF，已从页面取得 FLV", file=sys.stderr)
     return stream_url

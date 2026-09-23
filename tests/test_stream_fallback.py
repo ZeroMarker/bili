@@ -1,11 +1,12 @@
 """Stream URL protocol and TikTok fallback regression tests."""
 
 import importlib.util
+import json
 import os
-import signal
 import sys
-import tempfile
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
@@ -60,99 +61,72 @@ class StreamProtocolTest(unittest.TestCase):
             "https://cdn.example/video.flv",
         )
 
+    def test_stale_stream_data_rejected_unless_live(self):
+        """离线页（status=4）残留的陈旧 streamData 必须拒绝；直播（status=2）放行。
 
-class ChromiumCleanupTest(unittest.TestCase):
-    def _proc(self):
-        proc = mock.Mock()
-        proc.pid = 1234
-        proc.args = ["chromium", "--headless=new"]
-        proc.communicate.return_value = ("", "")
-        return proc
+        陈旧 FLV 永远 404：放行会把死地址交给推流循环空转。
+        """
+        def html_for(live_room):
+            sigi = {"LiveRoom": {"liveRoomUserInfo": {"liveRoom": live_room}}}
+            return '<script id="SIGI_STATE">' + __import__("json").dumps(sigi) + "</script>"
 
-    def test_process_group_is_terminated(self):
-        proc = self._proc()
-        with (
-            mock.patch.object(tiktok_fallback.os, "killpg") as killpg,
-            mock.patch.object(
-                tiktok_fallback, "_wait_for_process_group_exit", return_value=True
-            ),
-        ):
-            tiktok_fallback._terminate_process_group(proc, grace=2)
-        killpg.assert_called_once_with(1234, signal.SIGTERM)
+        stale = {"status": 4, "streamData": {"flv": "https://cdn.example/stale.flv"}}
+        self.assertIsNone(tiktok_fallback._stream_url_from_sigi(html_for(stale)))
+        live = {"status": 2, "streamData": {"flv": "https://cdn.example/live.flv"}}
+        self.assertEqual(
+            tiktok_fallback._stream_url_from_sigi(html_for(live)),
+            "https://cdn.example/live.flv",
+        )
 
-    def test_snap_profile_parent_is_shared(self):
-        with (
-            mock.patch.object(tiktok_fallback.Path, "home", return_value=Path("/home/test")),
-            mock.patch.object(tiktok_fallback.Path, "mkdir") as mkdir,
-            mock.patch.object(tiktok_fallback, "_remove_stale_chromium_profiles"),
-        ):
-            parent = tiktok_fallback._chromium_profile_parent("/snap/bin/chromium")
-        self.assertEqual(parent, "/home/test/snap/chromium/common/chromium-headless")
-        mkdir.assert_called_once_with(mode=0o700, parents=True, exist_ok=True)
 
-    def test_stale_cleanup_preserves_active_and_recent(self):
-        with tempfile.TemporaryDirectory() as directory:
-            parent = Path(directory)
-            stale = parent / "bili-tiktok-chromium-stale"
-            active = parent / "bili-tiktok-chromium-active"
-            recent = parent / "bili-tiktok-chromium-recent"
-            unrelated = parent / "tiktok-chromium-other-project"
-            for path in (stale, active, recent, unrelated):
-                path.mkdir()
-            os.utime(stale, (100, 100))
-            os.utime(active, (100, 100))
-            os.utime(recent, (950, 950))
-            with (
-                mock.patch.object(tiktok_fallback.time, "time", return_value=1000),
-                mock.patch.object(
-                    tiktok_fallback,
-                    "_active_chromium_profiles",
-                    return_value={str(active)},
-                ),
-            ):
-                tiktok_fallback._remove_stale_chromium_profiles(parent, max_age=100)
-            self.assertFalse(stale.exists())
-            self.assertTrue(active.exists())
-            self.assertTrue(recent.exists())
-            self.assertTrue(unrelated.exists())
 
-    def test_successful_probe_always_reaps_group(self):
-        proc = self._proc()
-        proc.communicate.return_value = ('<script id="SIGI_STATE">{}</script>', "")
-        with (
-            mock.patch.object(tiktok_fallback.shutil, "which", return_value="/usr/bin/chrome"),
-            mock.patch.object(tiktok_fallback.tempfile, "TemporaryDirectory") as temp_dir,
-            mock.patch.object(tiktok_fallback.subprocess, "Popen", return_value=proc),
-            mock.patch.object(tiktok_fallback, "_terminate_process_group") as terminate,
-            mock.patch.object(
-                tiktok_fallback, "_install_termination_handlers", return_value={}
-            ),
-            mock.patch.object(tiktok_fallback, "_restore_signal_handlers"),
-        ):
-            temp_dir.return_value.__enter__.return_value = "/tmp/profile"
-            result = tiktok_fallback._get_stream_url_with_browser("example")
-        self.assertIsNone(result)
-        terminate.assert_called_once_with(proc)
-        temp_dir.assert_called_once_with(prefix="bili-tiktok-chromium-", dir=None)
 
-    def test_stop_signal_is_forwarded_to_browser_group(self):
-        proc = self._proc()
-        handlers = {}
 
-        def save_handler(signum, handler):
-            handlers[signum] = handler
+class BrowserdClientTest(unittest.TestCase):
+    """共享渲染客户端：请求参数要送对，服务不可用必须降级为 None。"""
 
-        with (
-            mock.patch.object(tiktok_fallback.signal, "getsignal", return_value=signal.SIG_DFL),
-            mock.patch.object(tiktok_fallback.signal, "signal", side_effect=save_handler),
-            mock.patch.object(tiktok_fallback.os, "killpg") as killpg,
-        ):
-            previous = tiktok_fallback._install_termination_handlers(proc)
-            with self.assertRaises(SystemExit):
-                handlers[signal.SIGTERM](signal.SIGTERM, None)
+    def _serve(self, body: bytes):
+        """启动一次性 stub 渲染服务，请求体记录在 self.captured。"""
+        outer = self
 
-        self.assertEqual(set(previous), {signal.SIGTERM, signal.SIGINT, signal.SIGQUIT})
-        killpg.assert_called_once_with(proc.pid, signal.SIGKILL)
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_args) -> None:
+                pass
+
+            def do_POST(self) -> None:
+                length = int(self.headers.get("Content-Length") or 0)
+                outer.captured = json.loads(self.rfile.read(length))
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return server
+
+    def test_probe_renders_via_service_and_extracts(self):
+        sigi = {"LiveRoom": {"liveRoomUserInfo": {"liveRoom": {
+            "status": 2, "streamData": {"flv": "https://cdn.example/live.flv"}
+        }}}}
+        body = ('<script id="SIGI_STATE">' + json.dumps(sigi) + "</script>").encode()
+        server = self._serve(body)
+        endpoint = f"http://127.0.0.1:{server.server_address[1]}"
+        with mock.patch.dict(os.environ, {"TIKTOK_BROWSERD_URL": endpoint}):
+            url = tiktok_fallback._get_stream_url_with_browser("x", timeout=5)
+        self.assertEqual(url, "https://cdn.example/live.flv")
+        self.assertEqual(self.captured["url"], "https://www.tiktok.com/@x/live")
+        self.assertEqual(self.captured["timeout"], 5)
+        self.assertIn("streamData", self.captured["wait_js"])
+
+    def test_probe_returns_none_when_service_down(self):
+        with mock.patch.dict(os.environ, {"TIKTOK_BROWSERD_URL": "http://127.0.0.1:1"}):
+            self.assertIsNone(
+                tiktok_fallback._get_stream_url_with_browser("x", timeout=2)
+            )
 
 
 if __name__ == "__main__":
